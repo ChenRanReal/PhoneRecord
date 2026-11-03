@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhoneRecord · 通话录音</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel-2:#1d222b; --line:#262b36;
+    --text:#e6e8ee; --muted:#8b93a7; --accent:#4f8cff;
+    --in:#34d399; --out:#60a5fa; --missed:#f87171; --rec:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 22px;
+         border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:10}
+  h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.3px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#4b5563;display:inline-block;margin-right:6px}
+  .dot.on{background:var(--in);box-shadow:0 0 8px rgba(52,211,153,.7)}
+  .dot.rec{background:var(--rec);box-shadow:0 0 8px rgba(251,191,36,.7);animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .status{color:var(--muted);font-size:12.5px}
+  .spacer{flex:1}
+  button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+         background:var(--panel-2);color:var(--text);padding:7px 13px;transition:.15s}
+  button:hover{border-color:#3a4252;background:#232936}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#3b7bf0}
+  .wrap{display:grid;grid-template-columns:1fr 300px;gap:16px;padding:16px 22px}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+  .card .k{color:var(--muted);font-size:12px}
+  .card .v{font-size:22px;font-weight:600;margin-top:2px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+  .tabs{display:flex;gap:4px;background:var(--panel);padding:3px;border-radius:9px;border:1px solid var(--line)}
+  .tabs button{border:none;background:transparent;padding:6px 12px;border-radius:7px;color:var(--muted)}
+  .tabs button.active{background:var(--panel-2);color:var(--text)}
+  input[type=search]{flex:1;min-width:160px;background:var(--panel);border:1px solid var(--line);
+       border-radius:9px;padding:8px 12px;color:var(--text);font:inherit}
+  input[type=search]:focus{outline:none;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:12px;overflow:hidden}
+  th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;padding:10px 12px;
+     border-bottom:1px solid var(--line);position:sticky;top:57px;background:var(--panel)}
+  td{padding:10px 12px;border-bottom:1px solid rgba(38,43,54,.6);font-size:13.5px}
+  tbody tr:hover{background:var(--panel-2)}
+  tbody tr.playing{background:rgba(79,140,255,.1)}
+  .tag{display:inline-block;padding:1px 8px;border-radius:5px;font-size:11.5px}
+  .tag.in{color:var(--in);background:rgba(52,211,153,.12)}
+  .tag.out{color:var(--out);background:rgba(96,165,250,.12)}
+  .tag.missed{color:var(--missed);background:rgba(248,113,113,.12)}
+  .name{font-weight:500}
+  .num{color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+  .num.unknown{color:#f0a04b}
+  .ops{display:flex;gap:6px;justify-content:flex-end}
+  .ops button{padding:4px 9px;font-size:12px}
+  .play{color:var(--accent);border-color:rgba(79,140,255,.4)}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+  aside{display:flex;flex-direction:column;gap:12px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .panel h2{font-size:13px;margin:0 0 10px;font-weight:600}
+  .unk{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;
+       border-bottom:1px dashed rgba(38,43,54,.8)}
+  .unk:last-child{border-bottom:none}
+  .unk .n{font-variant-numeric:tabular-nums;font-size:13px}
+  .unk .c{color:var(--muted);font-size:11.5px}
+  .unk button{padding:2px 9px;font-size:12px;border-color:rgba(79,140,255,.4);color:var(--accent)}
+  footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);
+         padding:10px 22px;display:none;align-items:center;gap:14px}
+  footer.show{display:flex}
+  footer audio{flex:1;height:36px}
+  footer .meta{color:var(--muted);font-size:12.5px;min-width:180px}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;
+         align-items:center;justify-content:center;z-index:50}
+  .modal.show{display:flex}
+  .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+      padding:20px;width:340px}
+  .modal h3{margin:0 0 6px;font-size:15px}
+  .modal p{margin:0 0 14px;color:var(--muted);font-size:12.5px}
+  .modal input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+      padding:9px 12px;color:var(--text);font:inherit;margin-bottom:14px}
+  .modal .row{display:flex;gap:8px;justify-content:flex-end}
+  .toast{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);
+      background:#232936;border:1px solid var(--line);padding:9px 18px;border-radius:9px;
+      font-size:13px;opacity:0;transition:.25s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <h1>PhoneRecord</h1>
+  <span class="status"><span class="dot" id="dot"></span><span id="statusText">连接中…</span></span>
+  <div class="spacer"></div>
+  <button id="syncBtn">同步话机</button>
+  <button class="primary" id="refreshBtn">刷新</button>
+</header>
+
+<div class="wrap">
+  <main>
+    <div class="stats">
+      <div class="card"><div class="k">通话总数</div><div class="v" id="statTotal">–</div></div>
+      <div class="card"><div class="k">今日通话</div><div class="v" id="statToday">–</div></div>
+      <div class="card"><div class="k">已录音</div><div class="v" id="statRec">–</div></div>
+      <div class="card"><div class="k">最后同步</div><div class="v" id="statSync" style="font-size:16px">–</div></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="tabs" id="tabs">
+        <button data-dir="all" class="active">全部</button>
+        <button data-dir="in">来电</button>
+        <button data-dir="out">拨出</button>
+        <button data-dir="missed">未接</button>
+        <button data-dir="recorded">已录音</button>
+      </div>
+      <input type="search" id="search" placeholder="搜索号码或姓名…">
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:130px">时间</th>
+          <th style="width:70px">方向</th>
+          <th>对象</th>
+          <th style="width:80px">时长</th>
+          <th style="width:130px"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none">没有匹配的通话</div>
+  </main>
+
+  <aside>
+    <div class="panel">
+      <h2>未知号码</h2>
+      <div id="unknownList" style="max-height:420px;overflow:auto">
+        <div class="c" style="color:var(--muted);font-size:12.5px">加载中…</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>提示</h2>
+      <div style="color:var(--muted);font-size:12.5px;line-height:1.7">
+        · 点击「播放」直接听录音<br>
+        · 点击「定位」在资源管理器中选中文件<br>
+        · 未知号码补上姓名后会立即生效
+      </div>
+    </div>
+  </aside>
+</div>
+
+<footer id="player">
+  <span class="meta" id="playerMeta">未选择</span>
+  <audio id="audio" controls preload="none"></audio>
+  <button id="closePlayer">关闭</button>
+</footer>
+
+<div class="modal" id="modal">
+  <div class="box">
+    <h3>添加姓名</h3>
+    <p id="modalSub"></p>
+    <input id="modalInput" placeholder="输入姓名，例如 郭培珂" autocomplete="off">
+    <div class="row">
+      <button id="modalCancel">取消</button>
+      <button class="primary" id="modalOk">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const state = { dir: "all", q: "", calls: [], current: null, target: null };
+
+const $ = (id) => document.getElementById(id);
+
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 1800);
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return "";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+function dirTag(d) {
+  const map = { in: ["in", "来电"], out: ["out", "拨出"], missed: ["missed", "未接"] };
+  const [cls, label] = map[d] || ["in", d];
+  return `<span class="tag ${cls}">${label}</span>`;
+}
+
+function render() {
+  const rows = $("rows");
+  rows.innerHTML = "";
+  $("empty").style.display = state.calls.length ? "none" : "block";
+
+  for (const c of state.calls) {
+    const tr = document.createElement("tr");
+    if (state.current === c.file && c.file) tr.classList.add("playing");
+
+    const who = c.name
+      ? `<div class="name">${escapeHtml(c.name)}</div><div class="num">${c.number}</div>`
+      : `<div class="name">${c.number || "未知号码"}</div>`;
+
+    tr.innerHTML = `
+      <td><div>${c.date}</div><div class="num">${c.clock}</div></td>
+      <td>${dirTag(c.direction)}</td>
+      <td class="${c.name ? "" : "num unknown"}">${who}</td>
+      <td>${c.duration_text}</td>
+      <td><div class="ops">
+        ${c.has_audio ? `<button class="play" data-play="${encodeURIComponent(c.file)}">播放</button>
+                         <button data-reveal="${encodeURIComponent(c.file)}">定位</button>` : ""}
+        ${!c.name && c.number ? `<button data-add="${c.number}">加名字</button>` : ""}
+      </div></td>`;
+    rows.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (m) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
+async function loadAll() {
+  const qs = `dir=${state.dir}&q=${encodeURIComponent(state.q)}`;
+  try {
+    const [calls, stats, unknown, status] = await Promise.all([
+      fetch(`/api/calls?${qs}`).then((r) => r.json()),
+      fetch("/api/stats").then((r) => r.json()),
+      fetch("/api/unknown").then((r) => r.json()),
+      fetch("/api/status").then((r) => r.json()),
+    ]);
+
+    state.calls = calls;
+    render();
+
+    $("statTotal").textContent = stats.total;
+    $("statToday").textContent = stats.today;
+    $("statRec").textContent = stats.recorded;
+    $("statSync").textContent = stats.last_refresh;
+
+    const dot = $("dot");
+    if (status.recording > 0) {
+      dot.className = "dot rec";
+      $("statusText").textContent = `录音中（${status.recording}）`;
+    } else if (status.healthy) {
+      dot.className = "dot on";
+      $("statusText").textContent = "服务正常";
+    } else {
+      dot.className = "dot";
+      $("statusText").textContent = status.message || "未就绪";
+    }
+
+    renderUnknown(unknown);
+  } catch (e) {
+    $("statusText").textContent = "服务未连接";
+    $("dot").className = "dot";
+  }
+}
+
+function renderUnknown(list) {
+  const box = $("unknownList");
+  if (!list.length) {
+    box.innerHTML = `<div style="color:var(--muted);font-size:12.5px">暂无未知号码</div>`;
+    return;
+  }
+  box.innerHTML = list.map((u) => `
+    <div class="unk">
+      <div>
+        <div class="n">${u.number}</div>
+        <div class="c">${u.count} 次通话</div>
+      </div>
+      <button data-add="${u.number}">加名字</button>
+    </div>`).join("");
+}
+
+function play(file) {
+  const name = decodeURIComponent(file);
+  state.current = name;
+  $("player").classList.add("show");
+  $("playerMeta").textContent = name;
+  $("audio").src = `/api/audio/${encodeURIComponent(name)}`;
+  $("audio").play().catch(() => {});
+  render();
+}
+
+async function reveal(file) {
+  const name = decodeURIComponent(file);
+  const res = await fetch("/api/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file: name }),
+  }).then((r) => r.json());
+  toast(res.ok ? "已在资源管理器中定位" : res.error || "定位失败");
+}
+
+function openAdd(number) {
+  state.target = number;
+  $("modalSub").textContent = `号码 ${number}`;
+  $("modalInput").value = "";
+  $("modal").classList.add("show");
+  setTimeout(() => $("modalInput").focus(), 50);
+}
+
+async function saveContact() {
+  const name = $("modalInput").value.trim();
+  if (!name) return;
+  const res = await fetch("/api/contacts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ number: state.target, name }),
+  }).then((r) => r.json());
+  $("modal").classList.remove("show");
+  if (res.ok) {
+    toast(`已保存：${res.number} → ${res.name}`);
+    await loadAll();
+  } else {
+    toast(res.error || "保存失败");
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset.play) { play(t.dataset.play); return; }
+  if (t.dataset.reveal) { reveal(t.dataset.reveal); return; }
+  if (t.dataset.add) { openAdd(t.dataset.add); return; }
+  if (t.id === "closePlayer") {
+    $("audio").pause();
+    $("player").classList.remove("show");
+    state.current = null;
+    render();
+  }
+});
+
+$("tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-dir]");
+  if (!btn) return;
+  [...$("tabs").children].forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
+  state.dir = btn.dataset.dir;
+  loadAll();
+});
+
+let searchTimer;
+$("search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.q = e.target.value;
+    loadAll();
+  }, 250);
+});
+
+$("refreshBtn").onclick = loadAll;
+$("syncBtn").onclick = async () => {
+  $("syncBtn").disabled = true;
+  $("syncBtn").textContent = "同步中…";
+  const res = await fetch("/api/sync", { method: "POST" }).then((r) => r.json()).catch(() => ({}));
+  $("syncBtn").disabled = false;
+  $("syncBtn").textContent = "同步话机";
+  toast(res.ok ? `已同步 ${res.calls} 条通话` : res.error || "同步失败");
+  loadAll();
+};
+
+$("modalCancel").onclick = () => $("modal").classList.remove("show");
+$("modalOk").onclick = saveContact;
+$("modalInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveContact();
+  if (e.key === "Escape") $("modal").classList.remove("show");
+});
+
+loadAll();
+setInterval(loadAll, 15000);
+</script>
+</body>
+</html>

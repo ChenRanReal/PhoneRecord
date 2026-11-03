@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>PhoneRecord — phone and recording</title>
+  <rect x="8" y="8" width="240" height="240" rx="53" fill="#2B69E6"/>
+  <path d="M 77 50 C 70 46 62 48 57 55 L 49 67 C 40 80 43 99 51 117 C 68 154 101 186 138 203 C 155 211 174 213 187 205 L 200 196 C 208 191 209 183 203 176 L 182 151 C 177 145 170 144 164 149 L 152 158 C 148 161 143 160 139 157 C 122 147 108 133 98 117 C 95 112 95 107 98 103 L 107 91 C 112 85 111 78 105 73 L 83 54 C 81 52 79 51 77 50 Z" fill="#FFFFFF"/>
+  <circle cx="185" cy="66" r="28" fill="#FFFFFF"/>
+  <circle cx="185" cy="66" r="22" fill="#F04452"/>
+</svg>

@@ -1,0 +1,17 @@
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.cpp text eol=crlf
+*.hpp text eol=lf
+*.h text eol=lf
+*.rc text eol=lf
+*.manifest text eol=lf
+*.ini text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.svg text eol=lf
+*.png binary
+*.ico binary
+*.exe binary

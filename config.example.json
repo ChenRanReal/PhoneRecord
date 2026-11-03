@@ -1,0 +1,17 @@
+{
+  "bind_ip": "0.0.0.0",
+  "control_port": 10000,
+  "advertise_ip": "",
+  "udp_port_start": 20000,
+  "udp_port_end": 20100,
+  "record_dir": "recordings",
+  "log_dir": "logs",
+  "directory_file": "directory.json",
+  "ledger_file": "recordings/calls.csv",
+  "default_codec": "PCMA",
+  "udp_idle_timeout": 5.0,
+  "control_terminator": "\r\n",
+  "control_idle_frame_ms": 200,
+  "ui_port": 8090,
+  "hook_port": 18080
+}
