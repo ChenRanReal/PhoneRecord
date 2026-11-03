@@ -76,6 +76,7 @@ static bool writePhoneSetupScript(const wstring& path) {
         L"    $r=Invoke-Setup '--phone-setup-apply' $r.plan_id\r\n"
         L"  }\r\n"
         L"  Write-Host '" + setupPsText(uiText("setup.script_done")) + L"'\r\n"
+        L"  Start-Sleep -Milliseconds 1200\r\n"
         L"  Start-Process -FilePath $exe -ArgumentList ('--config '+[char]34+$cfg+[char]34)\r\n"
         L"  Read-Host 'Enter' | Out-Null\r\n"
         L"} catch {Write-Host $_.Exception.Message -ForegroundColor Red;Read-Host 'Enter' | Out-Null;exit 1}\r\n";

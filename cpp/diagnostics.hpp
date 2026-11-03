@@ -4,7 +4,7 @@
 #include <iomanip>
 
 /// Product version included in the window, logs and diagnostic reports.
-static const char* const kProductVersion = "2.4.0";
+static const char* const kProductVersion = "2.4.1";
 
 /// Format a local wall-clock timestamp with millisecond precision.
 static std::string diagnosticTime() {

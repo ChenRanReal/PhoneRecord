@@ -1,4 +1,4 @@
-# PhoneRecord 2.4.0 — C++ 電話錄音工具
+# PhoneRecord 2.4.1 — C++ 電話錄音工具
 
 原生 Windows 桌面程式，直接建置為 `PhoneRecord.exe`，不需要 Python 或額外的 C++ Runtime 安裝。
 2.3.1 加入[原創電話錄音圖示](assets/README.md)，包含九種尺寸並內嵌於執行檔；視窗、工作列與系統托盤共用。

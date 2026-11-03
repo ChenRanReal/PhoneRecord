@@ -2,7 +2,7 @@
 
 ## 直接啟動
 
-雙擊 [Start-PhoneRecord.cmd](../Start-PhoneRecord.cmd)。新版位於 `cpp/PhoneRecord.exe`，檔案內容版本為 `2.4.0`。
+雙擊 [Start-PhoneRecord.cmd](../Start-PhoneRecord.cmd)。新版位於 `cpp/PhoneRecord.exe`，檔案內容版本為 `2.4.1`。
 首次使用請先讀 [快速上手](快速上手.md)；exe 可單獨啟動，沒有完整設定時開啟設定頁，讓使用者填自己的資料。程式內建三語首次設定對照及逐欄說明。
 先看「运行概览」，必要時按「本机检查」與「话机检查」。介面給出明確代碼及下一步，不必先找人讀原始日誌。
 
