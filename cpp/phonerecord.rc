@@ -5,8 +5,8 @@
 IDI_PHONERECORD ICON "assets/phonerecord.ico"
 
 1 VERSIONINFO
- FILEVERSION 2,3,1,0
- PRODUCTVERSION 2,3,1,0
+ FILEVERSION 2,4,0,0
+ PRODUCTVERSION 2,4,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -18,11 +18,11 @@ BEGIN
         BLOCK "080404b0"
         BEGIN
             VALUE "FileDescription", "PhoneRecord 通话录音工具\0"
-            VALUE "FileVersion", "2.3.1\0"
+            VALUE "FileVersion", "2.4.0\0"
             VALUE "InternalName", "PhoneRecord\0"
             VALUE "OriginalFilename", "PhoneRecord.exe\0"
             VALUE "ProductName", "PhoneRecord\0"
-            VALUE "ProductVersion", "2.3.1\0"
+            VALUE "ProductVersion", "2.4.0\0"
         END
     END
     BLOCK "VarFileInfo"

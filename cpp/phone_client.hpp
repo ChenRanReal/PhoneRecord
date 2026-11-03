@@ -3,6 +3,8 @@
 /// Serialized Fanvil web client preserving the device's existing challenge protocol.
 class PhoneClient {
 public:
+    /// Configure only the supported network-recording profile after an explicit plan confirmation.
+    PhoneSetupResult configurePhone(bool apply, const string& expectedPlan, const string& restorePath = "");
     /// Authenticate once and verify a protected page; offline mode prohibits phone traffic.
     bool login() {
         std::lock_guard<std::mutex> guard(mutex_);
@@ -374,3 +376,5 @@ private:
     /// Serialize authentication, checks and Start/Stop without locking the GUI thread.
     std::mutex mutex_;
 };
+
+#include "phone_setup_client.hpp"

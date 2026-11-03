@@ -7,6 +7,10 @@ config.local.*
 .env.*
 !.env.example
 .phone_cookie*
+*.dpapi
+phone-setup-backups/
+phone-setup-*.json
+PhoneRecord-phone-setup*.cmd
 directory.json
 contacts.txt
 contacts_extra.json

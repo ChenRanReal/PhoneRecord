@@ -1,4 +1,4 @@
-# PhoneRecord 2.3 quick start
+# PhoneRecord 2.4 quick start
 
 PhoneRecord automatically records connected calls from a compatible network-recording phone to a Windows PC. Recordings play inside the app. No Python installation is needed.
 
@@ -8,7 +8,7 @@ The verified combination is Fanvil X3S, hardware V1.1, firmware 2.4.7.9.1. Other
 2. Enter your own phone IPv4, HTTP web port (usually 80), authorized web username/password, and a local PC IPv4 reachable from the phone. Find the phone address on its network-status page and the PC address in Windows connection details or `ipconfig`. The web login is separate from the SIP extension account.
 3. Start with TCP control port **10000**, event port **18080**, and UDP **20000–20100**, or coordinate available ports with your administrator. Leave External trigger off for normal automatic recording. Select a writable recording folder.
 4. Save, use **Exit** at the lower left, then reopen the app. **X normally hides to the tray and does not restart the app.**
-5. On the phone web page, enable recording, select **Network** and **PCMA or PCMU**, set the recording server to the app's reachable local IPv4, and set the server port to its **TCP control port**. Allow the phone to reach the PC's control/event TCP and audio UDP ports.
+5. For automatic phone configuration, use **Settings → Phone setup script**. Save/restart first, generate the CMD, then exit while idle and run it. Review and type `APPLY`. It configures the fields below, creates an encrypted backup, verifies readback and reopens the app. Requires Windows PowerShell 5+, with no Python installation. Unknown interfaces or unrelated callbacks stop the operation. Alternatively, on the phone web page, enable recording, select **Network** and **PCMA or PCMU**, set the recording server to the app's reachable local IPv4, and set the server port to its **TCP control port**. Allow the phone to reach the PC's control/event TCP and audio UDP ports.
 6. Set the phone's Call Established and Call Terminated recording Action URLs below. Replace the placeholders with your own PC IPv4 and **event port**. Preserve unrelated company callbacks. If either event already serves another company workflow, have an administrator coordinate forwarding before replacing it.
 
 ```text
@@ -19,7 +19,7 @@ http://<PC_IP>:<EVENT_PORT>/event?ev=end
 The event port and recording server port have different roles. Event 18080 does not replace control 10000.
 
 7. Run **Check local**, **Check phone**, and **Check compatibility** while idle. Inspection reads the recording/callback pages; it does not change the phone, dial or toggle recording. Follow the individual findings. Matching settings means you are ready for call acceptance, rather than proof that audio works.
-8. Connect a real call for about **20 seconds**, let both people speak, hang up, then play the newest recording. Confirm its time and both speakers. A green indicator or successful signal check alone is insufficient.
+8. Dialing/ringing alone does not trigger recording. Connect a real call for about **20 seconds**, let both people speak, hang up, then play the newest recording. Confirm its time and both speakers. A green indicator or successful signal check alone is insufficient.
 
 An unknown interface means an adapter may be required; it does not establish that the phone hardware cannot record. An unreadable page requires checking the web port, permissions, session and connection. Inspection waits during a call. Unsaved/unapplied connection changes require saving and restarting first.
 

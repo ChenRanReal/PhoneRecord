@@ -1,4 +1,4 @@
-# PhoneRecord 2.3.1 — C++ 電話錄音工具
+# PhoneRecord 2.4.0 — C++ 電話錄音工具
 
 原生 Windows 桌面程式，直接建置為 `PhoneRecord.exe`，不需要 Python 或額外的 C++ Runtime 安裝。
 2.3.1 加入[原創電話錄音圖示](assets/README.md)，包含九種尺寸並內嵌於執行檔；視窗、工作列與系統托盤共用。
@@ -12,6 +12,10 @@
 exe 可單獨首次啟動，沒有配置或必要欄位未填時直接開啟設定頁，位址及網頁帳號不預填。可選用 [空白配置範本](config.example.ini)。保存連接設定後需按左下「退出程式」再重開；右上 X 通常只收起到托盤。
 預設事件埠為 `18080`，可改成其他未占用埠；一般介面保存不自動改寫話機。
 `hook_port=0` 是外部觸發模式，介面會明確標示。自動觸發所用事件埠必須與話機 Action URL 一致。
+
+## 自動設定話機
+
+連線檢查成功僅表示能登入電話。設定頁可「產生話機設定腳本」，保存重啟後產生、無通話時退出程式再執行。腳本先預覽，輸入 APPLY 才套用，保留可讀取的其他欄位，先加密備份再回讀驗證；失敗時嘗試還原。只需 exe 與 Windows PowerShell 5+，不需 Python。完整流程見 [話機自動設定](../docs/話機自動設定.md)。
 
 ## 操作
 
@@ -98,6 +102,7 @@ py -3 tests\desktop_smoke.py --output docs\probe\onboarding_20261103
 
 介面測試使用 Pillow 產生離線 UI 預覽，產品程式本身不依賴 Pillow 或 Python。
 首次使用／適配／通知：`tests\onboarding_smoke.py --output docs\probe\onboarding_20261103\onboarding`。
+話機自動設定：`tests\phone_setup_smoke.py --output docs\probe\setup_20261103\phone_setup`。
 測試範圍、重現方式與限制見 [開發與驗證](../docs/開發與驗證.md)；本機結果存放於 Git 忽略的 `docs/probe/`。
 
 ## 國際化與多語言交付

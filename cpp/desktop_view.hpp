@@ -4,6 +4,7 @@
 #include "audio_player.hpp"
 #include "numeric_edit.hpp"
 #include "resource.h"
+#include "phone_setup_runtime.hpp"
 
 /// Load a shared embedded product icon at the system's large or small native size.
 static HICON applicationIcon(bool smallSize = false) {
@@ -197,6 +198,7 @@ private:
         notificationChoice_ = localizedControl(L"BUTTON", "field.notifications", WS_TABSTOP | BS_AUTOCHECKBOX, 414, 3);
         SendMessageW(notificationChoice_, BM_SETCHECK, g_cfg.trayNotifications ? BST_CHECKED : BST_UNCHECKED, 0);
         button("button.save", 420, 3); button("button.browse", 421, 3); button("button.setup_guide", 422, 3); button("button.compatibility", 423, 3);
+        button("button.phone_setup_script", 424, 3);
         settingNote_ = localizedControl(L"EDIT", "settings.note", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 722, 3, WS_EX_CLIENTEDGE);
         SendMessageW(settingNote_, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont_), TRUE);
         helpTopic_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 800, 4);
@@ -258,6 +260,7 @@ private:
         move(closeLabel_, left, 546, column - 30, 22); move(closeChoice_, left, 571, column - 32, 180);
         move(notificationChoice_, left, 610, available, 28);
         move(GetDlgItem(window_, 422), left + 148, h - 74, 148, 36); move(GetDlgItem(window_, 423), left + 308, h - 74, 174, 36);
+        move(GetDlgItem(window_, 424), left + 494, h - 74, std::min(226, available - 494), 36);
         move(intervalLabel_, left + column + 10, 546, column - 10, 22); move(intervalChoice_, left + column + 10, 571, column - 10, 200);
         if (recordings_) ListView_SetColumnWidth(recordings_, 2, px(std::max(170, available - 750)));
         if (diagnostics_) ListView_SetColumnWidth(diagnostics_, 3, px(std::max(200, available - 315)));
@@ -444,8 +447,9 @@ private:
         drawText(dc, uiText(subtitles[page_]), 200, 66, width() - 224, 25, RGB(100, 116, 139), font_);
         const auto state = diagnosticSnapshot();
         const bool ready = state.controlListening && (state.eventListening || g_cfg.hookPort == 0) && (state.authenticated || g_cfg.hookPort == 0) && g_diagnosticLog.storageError().empty() && state.localHealth.status != 2 && state.phoneHealth.status != 2;
-        const wchar_t* badge = g_offline ? uiText("status.offline") : restartNeeded_ ? uiText("status.saved_restart") : !ready ? uiText("status.attention") : g_cfg.hookPort == 0 ? uiText("status.receiver") : uiText("status.ready");
-        drawText(dc, badge, width() - 226, 30, 202, 28, ready && !g_offline ? RGB(16, 127, 101) : RGB(179, 102, 10), font_, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        const bool configured = compatibilitySnapshot().verdict == "ready" || state.attemptRtp;
+        const wchar_t* badge = g_offline ? uiText("status.offline") : restartNeeded_ ? uiText("status.saved_restart") : !ready ? uiText("status.attention") : g_cfg.hookPort == 0 ? uiText("status.receiver") : uiText(configured ? "status.ready" : "status.setup_needed");
+        drawText(dc, badge, width() - 226, 30, 202, 28, ready && (configured || g_cfg.hookPort == 0) && !g_offline ? RGB(16, 127, 101) : RGB(179, 102, 10), font_, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         if (page_ == 0) paintOverview(dc, state);
         if (page_ == 1) paintPlayer(dc);
         if (page_ == 1) drawText(dc, uiText("footer.evidence"), 200, height() - 36, width() - 224, 24, RGB(100, 116, 139), smallFont_);
@@ -501,7 +505,7 @@ private:
         else if (state.phoneHealth.status == 2) code = state.phoneHealth.code;
         else if (g_offline) code = "OFFLINE_MODE";
         else if (g_cfg.hookPort == 0) code = "EXTERNAL_TRIGGER_MODE";
-        else if (!active && state.authenticated && state.controlListening && state.eventListening && state.localHealth.status == 1) code = "AUTO_RECORD_READY";
+        else if (!active && state.authenticated && state.controlListening && state.eventListening && state.localHealth.status == 1) code = compatibilitySnapshot().verdict == "ready" || state.attemptRtp ? "AUTO_RECORD_READY" : "PHONE_SETUP_REQUIRED";
         if (!g_diagnosticLog.storageError().empty()) code = g_diagnosticLog.storageError();
         const wstring guidance = utf8ToWide(code) + L"  ·  " + diagnosticHint(code);
         drawText(dc, guidance, 216, 410, available - 32, 24, RGB(70, 88, 112), smallFont_);
@@ -634,6 +638,19 @@ private:
         MessageBoxW(window_, uiText(output ? "message.exported" : "message.export_failed"), L"PhoneRecord", MB_OK | (output ? MB_ICONINFORMATION : MB_ICONERROR));
     }
 
+    /// Export a local setup script only after the visible connection values are applied.
+    void exportPhoneSetupScript() {
+        if (restartNeeded_ || connectionDraftChanged() || !g_cfg.errors().empty()) { MessageBoxW(window_, uiText("setup.save_first"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
+        if (diagnosticSnapshot().callActive || g_sessionCount > 0) { MessageBoxW(window_, uiText("setup.SETUP_PHONE_BUSY"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
+        wchar_t path[32768] = L"PhoneRecord-phone-setup.cmd";
+        OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = window_; dialog.lpstrFile = path;
+        dialog.nMaxFile = static_cast<DWORD>(std::size(path)); dialog.lpstrFilter = L"Windows CMD (*.cmd)\0*.cmd\0\0";
+        dialog.lpstrDefExt = L"cmd"; dialog.lpstrTitle = uiText("button.phone_setup_script"); dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&dialog)) return;
+        const bool ok = writePhoneSetupScript(path);
+        MessageBoxW(window_, uiText(ok ? "setup.exported" : "message.export_failed"), L"PhoneRecord", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
+    }
+
     /// Validate a separate settings copy and preserve the live socket configuration until restart.
     void saveSettings() {
         Config candidate = g_cfg; candidate.formatError = false;
@@ -687,6 +704,7 @@ private:
         if (id == 313) { exportReport(); return; }
         if (id == 314) { openFolder(false); return; }
         if (id == 420) { saveSettings(); return; }
+        if (id == 424) { exportPhoneSetupScript(); return; }
         if (id == 422) { switchPage(4); SendMessageW(helpTopic_, CB_SETCURSEL, 6, 0); refreshHelp(); return; }
         if (id == 423 || id == 804) { requestCompatibility(); return; }
         if (id == 805) { copyReport(true); return; }

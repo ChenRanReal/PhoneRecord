@@ -480,6 +480,7 @@ public:
 // ===========================================================================
 
 #include "compatibility.hpp"
+#include "phone_setup.hpp"
 #include "phone_client.hpp"
 
 static PhoneClient g_phone;

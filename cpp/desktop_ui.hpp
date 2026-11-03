@@ -27,7 +27,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
     wchar_t executable[32768]{}; GetModuleFileNameW(NULL, executable, static_cast<DWORD>(std::size(executable)));
     wstring folder(executable); folder = folder.substr(0, folder.find_last_of(L"\\/"));
-    wstring config = folder + L"\\config.ini", exportPath, analysePath;
+    wstring config = folder + L"\\config.ini", exportPath, analysePath, setupReport, setupRestore, setupScript;
+    string setupAction, setupPlan;
     bool headless = false, stopExisting = false;
     int runFor = 0;
     for (int index = 1; arguments && index < count; ++index) {
@@ -35,6 +36,12 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         if (argument == L"--config" && index + 1 < count) config = absoluteStartupPath(arguments[++index]);
         else if (argument == L"--offline") g_offline = true;
         else if (argument == L"--headless") headless = true;
+        else if (argument == L"--phone-setup-preview") { setupAction = "preview"; headless = true; }
+        else if (argument == L"--phone-setup-apply") { setupAction = "apply"; headless = true; }
+        else if (argument == L"--phone-setup-restore" && index + 1 < count) { setupAction = "restore"; setupRestore = absoluteStartupPath(arguments[++index]); headless = true; }
+        else if (argument == L"--export-phone-setup-script" && index + 1 < count) { setupAction = "export"; setupScript = absoluteStartupPath(arguments[++index]); headless = true; }
+        else if (argument == L"--setup-report" && index + 1 < count) setupReport = absoluteStartupPath(arguments[++index]);
+        else if (argument == L"--setup-plan" && index + 1 < count) setupPlan = wideToUtf8(arguments[++index]);
         else if (argument == L"--capture-dir" && index + 1 < count) g_uiCaptureDirectory = absoluteStartupPath(arguments[++index]);
         else if (argument == L"--stop") stopExisting = true;
         else if (argument == L"--run-for" && index + 1 < count) runFor = configurationInteger(wideToUtf8(arguments[++index]));
@@ -60,6 +67,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     }
     HANDLE singleton = CreateMutexW(NULL, FALSE, mutexName.c_str());
     if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (!setupAction.empty() && !setupReport.empty()) { PhoneSetupResult result; result.code = "SETUP_CLOSE_APPLICATION"; writePhoneSetupReport(setupReport, result); }
         if (!headless) MessageBoxW(NULL, uiText("message.instance"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
         CloseHandle(singleton); return 3;
     }
@@ -75,6 +83,16 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     g_healthIntervalSec = g_cfg.healthIntervalSec;
     g_trayNotifications = g_cfg.trayNotifications != 0;
     g_closeAction = g_cfg.closeAction == "exit" ? 2 : g_cfg.closeAction == "minimize" ? 1 : 0;
+    if (!setupAction.empty()) {
+        int status = 2;
+        if (setupAction == "export") status = g_cfg.errors().empty() && writePhoneSetupScript(setupScript) ? 0 : 2;
+        else {
+            if (setupReport.empty()) setupReport = folder + L"\\phone-setup-report.json";
+            status = runPhoneSetupCommand(setupAction, setupPlan, wideToUtf8(setupRestore), setupReport);
+        }
+        LOGI("PHONE_SETUP_COMMAND_END operation=%s exit=%d", setupAction.c_str(), status);
+        WSACleanup(); if (stopSignal) CloseHandle(stopSignal); CloseHandle(singleton); return status;
+    }
     initG711();
     g_uiRecordStart = desktopRecordingStarted; g_uiRecordStop = desktopRecordingStopped;
     if (!analysePath.empty()) {

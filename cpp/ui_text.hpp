@@ -21,6 +21,7 @@ static const wchar_t* uiText(const char* key) {
 /// Map stable diagnostic codes to actionable operator guidance in the existing locale.
 static const wchar_t* diagnosticHint(const string& code) {
     if (code == "AUTO_RECORD_READY") return uiText("hint.automatic");
+    if (code == "PHONE_SETUP_REQUIRED") return uiText("hint.phone_setup");
     if (code == "OFFLINE_MODE") return uiText("hint.offline");
     if (code == "WAV_ANALYSED") return uiText("hint.analysis");
     if (code == "WAV_CLOSED") return uiText("hint.finalized");
