@@ -147,6 +147,8 @@ private:
         languageChoice_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 430, -1);
         for (const wchar_t* language : {L"简体中文", L"繁體中文", L"English"}) SendMessageW(languageChoice_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(language));
         SendMessageW(languageChoice_, CB_SETCURSEL, g_uiLanguage.load(), 0);
+        // Project link beside the version. The visible control is the GitHub mark only.
+        control(L"BUTTON", L"GitHub", WS_TABSTOP | BS_OWNERDRAW, 106, -1);
         button("button.local", 502, 0); button("button.phone", 503, 0); button("button.phone_web", 504, 0);
         followRecent_ = localizedControl(L"BUTTON", "button.follow", WS_TABSTOP | BS_AUTOCHECKBOX, 505, 0);
         SendMessageW(followRecent_, BM_SETCHECK, BST_CHECKED, 0);
@@ -213,6 +215,17 @@ private:
         SetTimer(window_, 1, 200, NULL); layout(); updatePlayer(); refreshLogs(true); refreshRecordings(true);
     }
 
+    /// Logical width of the "v<version>" label, used to place the project mark after it.
+    int versionLabelWidth(HDC dc) const {
+        if (!dc || !smallFont_) return 48;
+        const wstring version = L"v" + utf8ToWide(kProductVersion);
+        SIZE extent{};
+        HGDIOBJ old = SelectObject(dc, smallFont_);
+        GetTextExtentPoint32W(dc, version.c_str(), static_cast<int>(version.size()), &extent);
+        SelectObject(dc, old);
+        return std::max(1, MulDiv(extent.cx, 96, dpi_));
+    }
+
     /// Lay out all pages without fixed-resolution assumptions.
     void layout() {
         const int w = width(), h = height(), left = 200, available = w - left - 24;
@@ -223,6 +236,13 @@ private:
             if (child.id == 505) move(child.window, w - 182, 464, 158, 28);
         }
         move(languageChoice_, 14, h - 139, 148, 28);
+        if (HWND link = GetDlgItem(window_, 106)) {
+            HDC dc = GetDC(window_);
+            const int textWidth = versionLabelWidth(dc);
+            if (dc) ReleaseDC(window_, dc);
+            const int hit = 22;
+            move(link, std::min(21 + textWidth + 5, 176 - 8 - hit), h - 42, hit, hit);
+        }
         move(helpTopic_, left, 110, available - 354, 240); move(GetDlgItem(window_, 804), w - 366, 110, 174, 32); move(GetDlgItem(window_, 805), w - 180, 110, 156, 32); move(helpText_, left, 158, available, h - 200);
         move(recent_, left, 534, available, h - 576);
         move(recordingSearch_, left, 110, std::max(180, available - 460), 32);
@@ -440,7 +460,7 @@ private:
         drawText(dc, L"PhoneRecord", 20, 24, 152, 32, RGB(255, 255, 255), valueFont_);
         drawText(dc, uiText("app.subtitle"), 21, 62, 150, 42, RGB(153, 175, 202), smallFont_, DT_LEFT | DT_TOP | DT_WORDBREAK);
         drawText(dc, uiText("field.language"), 14, height() - 164, 148, 22, RGB(153, 175, 202), smallFont_);
-        drawText(dc, L"v" + utf8ToWide(kProductVersion) + L"  /  C++", 21, height() - 42, 150, 22, RGB(153, 175, 202), smallFont_);
+        drawText(dc, L"v" + utf8ToWide(kProductVersion), 21, height() - 42, versionLabelWidth(dc) + 4, 22, RGB(153, 175, 202), smallFont_);
         const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help"};
         const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle"};
         drawText(dc, uiText(titles[page_]), 200, 22, width() - 430, 40, RGB(23, 40, 65), titleFont_);
@@ -530,9 +550,63 @@ private:
         if (!seeking_) SendMessageW(playerSeek_, TBM_SETPOS, TRUE, player_.length() ? static_cast<LPARAM>(static_cast<uint64_t>(player_.position()) * 1000 / player_.length()) : 0);
     }
 
+    /// Draw the GitHub mark into a device rectangle. The path is the 24-unit octocat, even-odd filled.
+    void drawGitHubMark(HDC dc, RECT area, COLORREF color) const {
+        static const int curves[] = {
+            5370, 297, 0, 5670, 0, 12297, 0, 17600, 3438, 22097, 8205, 23682,
+            8805, 23795, 9025, 23424, 9025, 23105, 9025, 22820, 9015, 22065, 9010, 21065,
+            5672, 21789, 4968, 19455, 4968, 19455, 4422, 18070, 3633, 17700, 3633, 17700,
+            2546, 16956, 3717, 16971, 3717, 16971, 4922, 17055, 5555, 18207, 5555, 18207,
+            6625, 20042, 8364, 19512, 9050, 19205, 9158, 18429, 9467, 17900, 9810, 17600,
+            7145, 17300, 4344, 16268, 4344, 11670, 4344, 10360, 4809, 9290, 5579, 8450,
+            5444, 8147, 5039, 6927, 5684, 5274, 5684, 5274, 6689, 4952, 8984, 6504,
+            9944, 6237, 10964, 6105, 11984, 6099, 13004, 6105, 14024, 6237, 14984, 6504,
+            17264, 4952, 18269, 5274, 18269, 5274, 18914, 6927, 18509, 8147, 18389, 8450,
+            19154, 9290, 19619, 10360, 19619, 11670, 19619, 16280, 16814, 17295, 14144, 17590,
+            14564, 17950, 14954, 18686, 14954, 19810, 14954, 21416, 14939, 22706, 14939, 23096,
+            14939, 23411, 15149, 23786, 15764, 23666, 20565, 22092, 24000, 17592, 24000, 12297,
+            24000, 5670, 18627, 297, 12000, 297
+        };
+        static_assert(sizeof(curves) / sizeof(curves[0]) == 150, "GitHub mark cubic count");
+        const int mark = px(20);
+        const int insetX = std::max(0, (static_cast<int>(area.right - area.left) - mark) / 2);
+        const int insetY = std::max(0, (static_cast<int>(area.bottom - area.top) - mark) / 2);
+        InflateRect(&area, -insetX, -insetY);
+        const int width = area.right - area.left, height = area.bottom - area.top;
+        if (width <= 1 || height <= 1) return;
+        const int spanX = width - 1, spanY = height - 1;
+        auto map = [&](int value, int origin, int span) { return origin + MulDiv(value, span, 24000); };
+        if (!BeginPath(dc)) return;
+        MoveToEx(dc, map(12000, area.left, spanX), map(297, area.top, spanY), NULL);
+        POINT points[75];
+        int count = 0;
+        for (int index = 0; index < 150; index += 6) {
+            points[count++] = POINT{map(curves[index], area.left, spanX), map(curves[index + 1], area.top, spanY)};
+            points[count++] = POINT{map(curves[index + 2], area.left, spanX), map(curves[index + 3], area.top, spanY)};
+            points[count++] = POINT{map(curves[index + 4], area.left, spanX), map(curves[index + 5], area.top, spanY)};
+        }
+        PolyBezierTo(dc, points, count);
+        EndPath(dc);
+        const int previous = SetPolyFillMode(dc, ALTERNATE);
+        HBRUSH brush = CreateSolidBrush(color);
+        HGDIOBJ oldBrush = SelectObject(dc, brush), oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+        FillPath(dc);
+        SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(brush);
+        SetPolyFillMode(dc, previous);
+    }
+
     /// Draw a native button with consistent spacing, disabled state and keyboard focus.
     void drawButton(DRAWITEMSTRUCT* item) {
-        const int id = static_cast<int>(item->CtlID); const bool nav = (id >= 100 && id <= 104) || id == 902, active = id >= 100 && id <= 104 && id - 100 == page_;
+        const int id = static_cast<int>(item->CtlID);
+        if (id == 106) {
+            HBRUSH surface = CreateSolidBrush(RGB(20, 32, 51));
+            FillRect(item->hDC, &item->rcItem, surface); DeleteObject(surface);
+            const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+            drawGitHubMark(item->hDC, item->rcItem, pressed ? RGB(255, 255, 255) : RGB(153, 175, 202));
+            if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &item->rcItem);
+            return;
+        }
+        const bool nav = (id >= 100 && id <= 104) || id == 902, active = id >= 100 && id <= 104 && id - 100 == page_;
         const bool disabled = (item->itemState & ODS_DISABLED) != 0, pressed = (item->itemState & ODS_SELECTED) != 0;
         COLORREF fill = nav ? active ? RGB(43, 105, 230) : RGB(20, 32, 51) : id == 500 || id == 420 ? RGB(43, 105, 230) : RGB(255, 255, 255);
         if (pressed) fill = nav || id == 500 || id == 420 ? RGB(29, 79, 180) : RGB(232, 239, 250);
@@ -695,6 +769,7 @@ private:
         if (id == 502) { g_commands.enqueue("local"); return; }
         if (id == 503) { g_commands.enqueue("phone"); return; }
         if (id == 505) { refreshLogs(true); return; }
+        if (id == 106) { ShellExecuteW(window_, L"open", L"https://github.com/ChenRanReal/PhoneRecord", NULL, NULL, SW_SHOWNORMAL); return; }
         if (id == 504) { ShellExecuteW(window_, L"open", utf8ToWide("http://" + g_cfg.phoneIp + ":" + std::to_string(g_cfg.phonePort)).c_str(), NULL, NULL, SW_SHOWNORMAL); return; }
         if (id == 216) { if (player_.playing()) player_.pause(); else player_.play(); updatePlayer(); return; }
         if (id == 217) { player_.stop(); updatePlayer(); return; }
@@ -808,6 +883,9 @@ private:
         case WM_SIZE: if (font_) layout(); return 0;
         case WM_GETMINMAXINFO: { auto* limits = reinterpret_cast<MINMAXINFO*>(lparam); limits->ptMinTrackSize.x = px(980); limits->ptMinTrackSize.y = px(760); return 0; }
         case WM_DPICHANGED: { dpi_ = HIWORD(wparam); destroyFonts(); createFonts(); for (const auto& child : controls_) SendMessageW(child.window, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE); const RECT* area = reinterpret_cast<RECT*>(lparam); SetWindowPos(window_, NULL, area->left, area->top, area->right - area->left, area->bottom - area->top, SWP_NOZORDER | SWP_NOACTIVATE); layout(); return 0; }
+        case WM_SETCURSOR:
+            if (reinterpret_cast<HWND>(wparam) == GetDlgItem(window_, 106)) { SetCursor(LoadCursorW(NULL, IDC_HAND)); return TRUE; }
+            break;
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: paint(); return 0;
         case WM_PRINTCLIENT: paint(reinterpret_cast<HDC>(wparam)); return 0;
