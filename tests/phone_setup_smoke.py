@@ -144,13 +144,15 @@ def main():
     """Verify review binding, preservation, idempotence, rollback, restore and export portability."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=pathlib.Path, required=True)
-    output = parser.parse_args().output.resolve()
+    parser.add_argument("--exe", type=pathlib.Path, default=BASE / "cpp/PhoneRecord.exe")
+    args = parser.parse_args()
+    output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     checks = []
     with tempfile.TemporaryDirectory(prefix="PhoneRecord-setup-测试-%!&'-") as temporary:
         root = pathlib.Path(temporary)
         with Phone() as phone:
-            app = App(root, BASE / "cpp/PhoneRecord.exe", output, "native", phone_port=phone.port, password="synthetic-setup")
+            app = App(root, args.exe.resolve(), output, "native", phone_port=phone.port, password="synthetic-setup")
             before_record, before_actions = copy.deepcopy(phone.record), copy.deepcopy(phone.actions)
             plan = command(app, "--phone-setup-preview")
             assert plan["code"] == "SETUP_PLAN_READY" and len(plan["changes"]) == 7 and not phone.writes
@@ -237,7 +239,7 @@ def main():
                 parsed = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps)], startupinfo=startup_info(), creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
                 assert parsed.returncode == 0
             checks.append("three-language ASCII CMD exports parse on Windows PowerShell with Unicode/special paths and embed no phone credentials or addresses")
-    result = {"passed": True, "synthetic_only": True, "real_phone_contacted": False, "exe_sha256": hashlib.sha256((BASE / "cpp/PhoneRecord.exe").read_bytes()).hexdigest(), "checks": checks}
+    result = {"passed": True, "synthetic_only": True, "real_phone_contacted": False, "exe_sha256": hashlib.sha256(args.exe.resolve().read_bytes()).hexdigest(), "checks": checks}
     (output / "setup_results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
     return 0

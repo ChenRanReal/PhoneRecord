@@ -9,6 +9,7 @@ public:
     bool login() {
         std::lock_guard<std::mutex> guard(mutex_);
         if (g_offline) { LOGI("AUTH_SKIPPED offline=true"); return false; }
+        readyObserved_ = 0;
         if (g_cfg.secretError) return authFailure("CREDENTIAL_DECRYPT_FAILED");
         loadCookie();
         string head, body;
@@ -32,7 +33,7 @@ public:
             // A successful request must enter the cache-validation branch. The previous
             // implementation tested !request(), then cleared an otherwise valid cookie.
             if (!cookie_.empty() && request("GET", "/record.htm", "", head, body) && protectedPage(head, body)) {
-                saveCookie(); return authSuccess("AUTH_CACHE_VALID");
+                rememberRecordState(body); saveCookie(); return authSuccess("AUTH_CACHE_VALID");
             }
             return authFailure("AUTH_SESSION_INVALID");
         }
@@ -44,6 +45,7 @@ public:
         if (loginPage(body) || head.find("200") == string::npos) return authFailure("AUTH_REJECTED");
         if (!sessionCookie.empty()) cookie_ = sessionCookie;
         if (!request("GET", "/record.htm", "", head, body) || !protectedPage(head, body)) return authFailure("AUTH_VERIFY_FAILED");
+        rememberRecordState(body);
         saveCookie();
         return authSuccess("AUTH_VERIFIED");
     }
@@ -53,8 +55,11 @@ public:
         std::lock_guard<std::mutex> guard(mutex_);
         if (g_offline) return operationFailure("OFFLINE_MODE");
         string head, body;
-        const int state = recordState();
-        LOGI("START_GUARD record_status=%d", state);
+        // Reuse a recent idle observation from login/health; querying again here costs
+        // another 1.1-second device quiet interval before Start can be sent.
+        const bool recentReady = readyObserved_ && GetTickCount64() - readyObserved_ <= 65000;
+        const int state = recentReady ? 4 : recordState();
+        LOGI("START_GUARD record_status=%d recent_ready=%d", state, recentReady);
         if (state < 0) return operationFailure(stale_ ? "AUTH_EXPIRED" : "PHONE_STATE_UNAVAILABLE");
         if (state != 4) {
             LOGW("START_STALE_STATE record_status=%d reset_once=true", state);
@@ -165,6 +170,7 @@ public:
 private:
     /// Mark authentication failure without revealing credentials or invalidating a good cache.
     bool authFailure(const char* code) {
+        readyObserved_ = 0;
         diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; });
         diagnosticHealth(true, false, code);
         diagnosticStage(RecordingStage::Failed, code);
@@ -196,18 +202,29 @@ private:
 
     /// Parse recording state using the device page already cleaned by the HTTP transport.
     int recordState(bool idleOnly = false) {
+        readyObserved_ = 0;
         string head, body;
         if (!request("GET", "/record.htm", "", head, body, idleOnly) || !protectedPage(head, body)) {
             if (requestDeferred_) return -2;
             if (loginPage(body)) { stale_ = true; diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; }); }
             return -1;
         }
+        return rememberRecordState(body);
+    }
+
+    /// Retain only a protected-page idle observation, bounded to one health-check cycle.
+    int rememberRecordState(const string& body) {
         std::smatch match;
-        return std::regex_search(body, match, std::regex("recordStatus\\s*=\\s*\"\\s*(\\d+)")) ? atoi(match[1].str().c_str()) : -1;
+        const int state = std::regex_search(body, match, std::regex("recordStatus\\s*=\\s*\"\\s*(\\d+)")) ? atoi(match[1].str().c_str()) : -1;
+        readyObserved_ = state == 4 ? GetTickCount64() : 0;
+        return state;
     }
 
     /// Post one CGI action; only explicit HTTP 503 permits a bounded retry.
     bool action(const char* name, string& head, string& body) {
+        // An accepted Stop is not proof of idle state, and a failed Start may have
+        // reached the phone. Either action consumes the previous ready observation.
+        readyObserved_ = 0;
         stale_ = false;
         for (int attempt = 0; attempt < 3 && !g_stopping; ++attempt) {
             if (!request("POST", string("/") + name, string("DefaultRecord=") + name, head, body)) return operationFailure("HTTP_TRANSPORT_FAILED");
@@ -369,6 +386,8 @@ private:
     string cookie_;
     /// Most recent action observed authentication expiry.
     bool stale_ = false;
+    /// Monotonic time of the last protected-page idle state, invalidated by all actions.
+    ULONGLONG readyObserved_ = 0;
     /// Idle checks yield to a newly established call instead of delaying its recording command.
     bool requestDeferred_ = false;
     /// High-resolution completion time; each following exchange waits at least 1.1 seconds.

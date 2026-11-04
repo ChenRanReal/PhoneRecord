@@ -458,6 +458,35 @@ def main() -> int:
 
         check("rtp_sequence_diagnostics", ordering)
 
+        def media_clock():
+            """Separate source clock gaps from loss, handling rollover and payload size changes."""
+            with App(root, exe, evidence, "media_clock") as app:
+                reply = app.request(start_frame("media-clock"))
+                packets = [(65534, 0xffffff00, 160, 1), (65535, 0xffffffa0, 160, 1),
+                           (0, 0x40, 160, 1), (1, 0x400, 160, 1), (2, 0x400, 160, 1),
+                           (3, 0x4a0, 80, 1), (4, 0x4f0, 160, 1),
+                           (5, 0x100000, 160, 2), (6, 0x1000a0, 160, 2)]
+                encoded = b""
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    for sequence, timestamp, count, ssrc in packets:
+                        payload = b"\x80" * count
+                        encoded += payload
+                        sock.sendto(struct.pack("!BBHII", 0x80, 8, sequence, timestamp, ssrc) + payload,
+                                    ("127.0.0.1", int(reply["port"])))
+                        time.sleep(.02)
+                app.stop_session("media-clock")
+                path, metadata = app.metadata("media-clock")
+                assert metadata["lost"] == 0 and metadata["packets"] == len(packets), metadata
+                assert metadata["timestamp_discontinuities"] == 2, metadata
+                assert metadata["timestamp_gap_samples"] == 800, metadata
+                assert metadata["timestamp_overlap_or_reset"] == 1 and metadata["ssrc_changes"] == 1, metadata
+                with wave.open(str(path), "rb") as wav:
+                    assert wav.readframes(wav.getnframes()) == g711.decode(encoded, "PCMA"), "diagnostics changed audio"
+                assert "RTP_CLOCK_DISCONTINUITY" in app.log() and "RTP_CLOCK_SUMMARY" in app.log()
+            return "zero loss with clock gap/overlap detected; sequence/timestamp wrap and source switch handled; PCM unchanged"
+
+        check("rtp_media_clock_diagnostics", media_clock)
+
         def storage_failure():
             """An unusable output path must preserve the distinction between RTP and WAV."""
             app = App(root, exe, evidence, "storage_failure")
@@ -549,11 +578,16 @@ def main() -> int:
             with FakePhone(password) as phone:
                 app = App(root, exe, evidence, "http_flow", offline=False, phone_port=phone.port, password=password)
                 phone.control_port = app.control
+                phone.callback_port = app.event
                 with app:
                     wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 8)
+                    before_start = len(phone.requests)
                     assert http_get(app.event, "/event?ev=est")[0] == 200
                     assert http_get(app.event, "/event?ev=est")[0] == 200
                     wait_for(lambda: phone.media_done.is_set(), 10)
+                    assert not any(method == "GET" for _, method, _ in phone.requests[before_start:]), "recent readiness was queried again at answer"
+                    assert "recent_ready=1" in app.log(), "recent idle state was not reused"
                     assert http_get(app.event, "/event?ev=end")[0] == 200
                     _, metadata = app.metadata(phone.session)
                     assert metadata["quality"] == "audio" and metadata["source"] == "test_or_other_peer", metadata
@@ -569,6 +603,64 @@ def main() -> int:
             return {"start_requests": 1, "minimum_http_interval": round(min(intervals), 3), "fin_path": True, "credential_redaction": True, "synthetic_only": True}
 
         check("full_native_trigger_flow", challenge)
+
+        def startup_inspection_retry():
+            """A call interrupts startup inspection, which resumes after idle even with health disabled."""
+            password = secrets.token_urlsafe(16)
+            with FakePhone(password) as phone:
+                app = App(root, exe, evidence, "startup_retry", offline=False, phone_port=phone.port, password=password)
+                app.config.write_text(app.config.read_text(encoding="utf-8") + "health_interval=0\n", encoding="utf-8")
+                phone.control_port, phone.callback_port = app.control, app.event
+                with app:
+                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
+                    assert http_get(app.event, "/event?ev=est")[0] == 200
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "deferred", 5)
+                    wait_for(lambda: phone.media_done.is_set(), 10)
+                    assert http_get(app.event, "/event?ev=end")[0] == 200
+                    wait_for(lambda: "STOP_COMPLETE" in app.log(), 8)
+                    wait_for(lambda: json.loads(http_get(app.event, "/health")[1])["active_sessions"] == 0)
+                    before_retry = len(phone.requests)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 28)
+                    assert phone.start_calls == 1 and not phone.errors, phone.errors
+                    assert all(method == "GET" for _, method, _ in phone.requests[before_retry:]), "idle retry wrote to phone"
+            return "startup inspection yields to call, then completes automatically after 20-second idle with health_interval=0"
+
+        check("startup_inspection_idle_retry", startup_inspection_retry)
+
+        def stale_start_guard():
+            """An observed busy state must retain the original query/reset/Start safety path."""
+            password = secrets.token_urlsafe(16)
+            with FakePhone(password) as phone:
+                phone.state = 1
+                app = App(root, exe, evidence, "stale_start", offline=False, phone_port=phone.port, password=password)
+                phone.control_port = app.control
+                phone.callback_port = app.event
+                with app:
+                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 8)
+                    assert http_get(app.event, "/event?ev=est")[0] == 200
+                    wait_for(lambda: phone.media_done.is_set(), 15)
+                    assert phone.start_calls == 1 and "START_STALE_STATE" in app.log(), app.log()[-1500:]
+                    assert "recent_ready=0" in app.log()
+                    posts = [path for _, method, path in phone.requests if method == "POST"]
+                    assert posts.index("/Stop") < posts.index("/Start"), posts
+                    assert http_get(app.event, "/event?ev=end")[0] == 200
+                    wait_for(lambda: "STOP_COMPLETE" in app.log())
+                    wait_for(lambda: json.loads(http_get(app.event, "/health")[1])["active_sessions"] == 0)
+                    # Stop invalidates the earlier ready page. A following call needs
+                    # a fresh protected-page query even while its age would be valid.
+                    previous_queries = len([p for _, m, p in phone.requests if m == "GET" and p == "/record.htm"])
+                    phone.media_done.clear()
+                    assert http_get(app.event, "/event?ev=est")[0] == 200
+                    wait_for(lambda: phone.start_calls == 2, 8)
+                    wait_for(lambda: phone.media_done.is_set(), 8)
+                    assert len([p for _, m, p in phone.requests if m == "GET" and p == "/record.htm"]) == previous_queries + 1
+                    assert http_get(app.event, "/event?ev=end")[0] == 200
+                    wait_for(lambda: app.log().count("STOP_COMPLETE") == 2)
+                    assert not phone.errors, phone.errors
+            return "busy state reset retained; Stop forces fresh query on the next call"
+
+        check("start_guard_invalidation", stale_start_guard)
 
         def cache():
             """Reproduce the previously inverted successful-cache-validation branch."""

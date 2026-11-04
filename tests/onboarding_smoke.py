@@ -44,10 +44,11 @@ def main() -> int:
     """Cover the supported profile, settings failures, insufficient evidence and fresh-user path."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--exe", type=pathlib.Path, default=BASE / "cpp/PhoneRecord.exe")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    exe = BASE / "cpp/PhoneRecord.exe"
+    exe = args.exe.resolve()
     checks = []
     with tempfile.TemporaryDirectory(prefix="PhoneRecord-onboarding-") as temporary:
         root = pathlib.Path(temporary)
@@ -58,6 +59,9 @@ def main() -> int:
             with app:
                 window = main_window(app)
                 wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
+                report = wait_for(lambda: inspection(app) if inspection(app)["verdict"] == "ready" else None, 8)
+                assert phone.start_calls == 0, "startup inspection triggered recording"
+                checks.append("startup automatically inspects the saved phone profile without Start/Stop or setting writes")
                 baseline = len(phone.requests)
                 report = run_check(window, app)
                 assert report["verdict"] == "ready" and report["recognized_profile"]

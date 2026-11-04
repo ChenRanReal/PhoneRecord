@@ -1,6 +1,6 @@
 #pragma once
 
-/// Bounded, owned HTTP event listener; callback work begins after acknowledgement.
+/// Bounded, owned HTTP event listener; callback work begins after response socket closure.
 class HttpServer {
 public:
     /// Store the listening port and request handler without starting background work.
@@ -67,16 +67,21 @@ private:
             auto done = std::make_shared<std::atomic<bool>>(false);
             Worker worker; worker.done = done;
             worker.thread = std::thread([this, client, done]() {
-                handle(client);
+                std::function<void()> afterClose;
+                handle(client, afterClose);
                 { std::lock_guard<std::mutex> guard(mutex_); clients_.erase(client); }
-                closesocket(client); *done = true;
+                closesocket(client);
+                // Release the Action URL connection before issuing reverse phone HTTP.
+                // Sending the body alone leaves a race with the phone waiting for EOF.
+                if (afterClose) afterClose();
+                *done = true;
             });
             workers_.push_back(std::move(worker));
         }
     }
 
-    /// Parse a small, bounded HTTP request and send its complete acknowledgement.
-    void handle(SOCKET client) {
+    /// Send a bounded acknowledgement and transfer successful work to the socket owner.
+    void handle(SOCKET client, std::function<void()>& afterClose) {
         u_long nonblocking = 1; ioctlsocket(client, FIONBIO, &nonblocking);
         string raw;
         size_t headerEnd = string::npos, need = 0;
@@ -127,7 +132,7 @@ private:
                << "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" << response.body;
         const bool sent = sendComplete(client, output.str());
         if (request.path != "/health") LOGI("EVENT_HTTP_ACK path=%s status=%d sent=%d", request.path == "/event" ? "/event" : "other", response.status, sent);
-        if (sent && response.afterSend) response.afterSend();
+        if (sent) afterClose = std::move(response.afterSend);
     }
 
     /// Configured TCP port.

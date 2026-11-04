@@ -178,14 +178,19 @@ static void initG711() {
 // RTP 解析
 // ===========================================================================
 
+/// Bounded RTP payload location and header evidence for sequence/media-clock diagnostics.
 struct RtpPacket {
     int  payloadType = 0;
     int  sequence = 0;
     int  payloadOffset = 0;
     int  payloadSize = 0;
+    /// Sender's 32-bit media sampling clock, independent of packet arrival time.
+    uint32_t timestamp = 0;
+    /// Sender's synchronization source; sequence numbers belong to this source.
+    uint32_t ssrc = 0;
 };
 
-/// Validate an RTPv2 datagram, returning its bounded payload and sequence fields.
+/// Validate RTPv2 and retain payload bounds, sequence, sampling clock and source.
 static bool parseRtp(const uint8_t* data, int size, RtpPacket& out) {
     if (size < 12) return false;
     if ((data[0] >> 6) != 2) return false;
@@ -196,6 +201,10 @@ static bool parseRtp(const uint8_t* data, int size, RtpPacket& out) {
 
     out.payloadType = data[1] & 0x7F;
     out.sequence = (data[2] << 8) | data[3];
+    out.timestamp = static_cast<uint32_t>(data[4]) << 24 | static_cast<uint32_t>(data[5]) << 16
+                  | static_cast<uint32_t>(data[6]) << 8 | data[7];
+    out.ssrc = static_cast<uint32_t>(data[8]) << 24 | static_cast<uint32_t>(data[9]) << 16
+             | static_cast<uint32_t>(data[10]) << 8 | data[11];
 
     int offset = 12 + csrcCount * 4;
     if (extension) {
@@ -516,7 +525,7 @@ struct HttpResponse {
     int status = 200;
     string contentType = "text/plain; charset=utf-8";
     string body;
-    /// Event work begins only after the complete HTTP response was sent.
+    /// Event work begins after the complete HTTP response is sent and its socket is closed.
     std::function<void()> afterSend;
 };
 
