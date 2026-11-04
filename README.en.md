@@ -2,7 +2,8 @@
 
 # PhoneRecord — Call Recording Workbench
 
-The current C++ desktop version is **2.4.1**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+The current C++ desktop version is **2.5.0**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+Version 2.5.0 adds optional startup at sign-in. The Settings checkbox applies immediately and defaults to off. When enabled, the app starts in the tray. After moving the exe, turn the option off and on to update its path.
 Version 2.4.1 adds a phone setup script: preview first, then after confirmation configure network recording and the two callbacks, verify by reading the settings back, and keep an encrypted backup. The original icon and the three-language interface remain.
 
 [Download the Windows program](https://github.com/ChenRanReal/PhoneRecord/raw/refs/heads/main/cpp/PhoneRecord.exe) · [Icons and assets](cpp/assets/README.md) (Chinese)
@@ -27,7 +28,7 @@ If the login check passes but a connected call is not recorded, read [話機自�
 | Overview (运行概览) | Automatic recording, separate local and phone health indicators, the recording pipeline, and a timeline that can follow the latest events |
 | Recordings (录音资料) | Search by name, number, or date; in-app play, pause, and drag the progress; reveal the file; signal check |
 | Diagnostics (诊断中心) | Millisecond events and stable codes, item-by-item guidance, copy or export a report |
-| Settings (连接设置) | Positive-integer ports, per-field descriptions, save folder, health-check interval, close behavior, and balloon-notification preference |
+| Settings (连接设置) | Positive-integer ports, per-field descriptions, save folder, health-check interval, close behavior, balloon notifications, and startup at sign-in |
 | Help & devices (帮助与适配) | Trilingual first-run help, generic callback templates, a read-only compatibility check, and a compatibility report that omits actual IP addresses |
 
 Tray balloons are off by default and can be turned on by the user. The check does not rewrite the phone, place a test call, or trigger recording. After settings match, a real call of about 20 seconds is still required, and both sides must be listened to.

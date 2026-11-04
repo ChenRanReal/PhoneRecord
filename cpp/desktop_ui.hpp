@@ -29,13 +29,14 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     wstring folder(executable); folder = folder.substr(0, folder.find_last_of(L"\\/"));
     wstring config = folder + L"\\config.ini", exportPath, analysePath, setupReport, setupRestore, setupScript;
     string setupAction, setupPlan;
-    bool headless = false, stopExisting = false;
+    bool headless = false, stopExisting = false, startup = false;
     int runFor = 0;
     for (int index = 1; arguments && index < count; ++index) {
         const wstring argument = arguments[index];
         if (argument == L"--config" && index + 1 < count) config = absoluteStartupPath(arguments[++index]);
         else if (argument == L"--offline") g_offline = true;
         else if (argument == L"--headless") headless = true;
+        else if (argument == L"--startup") startup = true;
         else if (argument == L"--phone-setup-preview") { setupAction = "preview"; headless = true; }
         else if (argument == L"--phone-setup-apply") { setupAction = "apply"; headless = true; }
         else if (argument == L"--phone-setup-restore" && index + 1 < count) { setupAction = "restore"; setupRestore = absoluteStartupPath(arguments[++index]); headless = true; }
@@ -68,12 +69,12 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     HANDLE singleton = CreateMutexW(NULL, FALSE, mutexName.c_str());
     if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
         if (!setupAction.empty() && !setupReport.empty()) { PhoneSetupResult result; result.code = "SETUP_CLOSE_APPLICATION"; writePhoneSetupReport(setupReport, result); }
-        if (!headless) MessageBoxW(NULL, uiText("message.instance"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
+        if (!headless && !startup) MessageBoxW(NULL, uiText("message.instance"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
         CloseHandle(singleton); return 3;
     }
     if (!singleton) return 2;
     HANDLE stopSignal = CreateEventW(NULL, TRUE, FALSE, stopName.c_str());
-    LOGI("APP_START version=%s pid=%lu offline=%d headless=%d", kProductVersion, GetCurrentProcessId(), g_offline, headless);
+    LOGI("APP_START version=%s pid=%lu offline=%d headless=%d startup=%d", kProductVersion, GetCurrentProcessId(), g_offline, headless, startup);
     TIME_ZONE_INFORMATION zone{}; const DWORD zoneId = GetTimeZoneInformation(&zone);
     LOGI("APP_CLOCK local_timezone_bias_minutes=%ld", zone.Bias + (zoneId == TIME_ZONE_ID_DAYLIGHT ? zone.DaylightBias : zone.StandardBias));
     WSADATA winsock{};
@@ -141,7 +142,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
             SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(type.hIcon));
             SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(type.hIconSm));
             if (!exists || !invalid.empty()) SendMessageW(window, WM_COMMAND, 103, 0);
-            ShowWindow(window, show); UpdateWindow(window);
+            const bool background = startup && exists && invalid.empty() && view.hasTrayIcon();
+            ShowWindow(window, background ? SW_HIDE : startup ? SW_SHOWNOACTIVATE : show); UpdateWindow(window);
+            if (startup) LOGI("AUTOSTART_WINDOW hidden=%d tray_available=%d config_valid=%d", background, view.hasTrayIcon(), exists && invalid.empty());
             MSG message{};
             while (GetMessageW(&message, NULL, 0, 0) > 0) {
                 if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }

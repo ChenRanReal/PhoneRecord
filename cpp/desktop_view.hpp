@@ -5,6 +5,7 @@
 #include "numeric_edit.hpp"
 #include "resource.h"
 #include "phone_setup_runtime.hpp"
+#include "user_startup.hpp"
 
 /// Load a shared embedded product icon at the system's large or small native size.
 static HICON applicationIcon(bool smallSize = false) {
@@ -47,6 +48,9 @@ public:
     explicit DesktopView(int dpi) : dpi_(dpi) {}
     /// Release every owned GDI object after the native window has been destroyed.
     ~DesktopView() { destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
+
+    /// Hide a login-started window only when its tray entry can restore it.
+    bool hasTrayIcon() const { return trayAdded_; }
 
     /// Route native messages to the instance supplied to CreateWindowExW.
     static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -199,6 +203,8 @@ private:
         SendMessageW(intervalChoice_, CB_SETCURSEL, selectedInterval, 0);
         notificationChoice_ = localizedControl(L"BUTTON", "field.notifications", WS_TABSTOP | BS_AUTOCHECKBOX, 414, 3);
         SendMessageW(notificationChoice_, BM_SETCHECK, g_cfg.trayNotifications ? BST_CHECKED : BST_UNCHECKED, 0);
+        startupChoice_ = localizedControl(L"BUTTON", "field.startup", WS_TABSTOP | BS_AUTOCHECKBOX | BS_NOTIFY, 415, 3);
+        refreshStartup();
         button("button.save", 420, 3); button("button.browse", 421, 3); button("button.setup_guide", 422, 3); button("button.compatibility", 423, 3);
         button("button.phone_setup_script", 424, 3);
         settingNote_ = localizedControl(L"EDIT", "settings.note", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 722, 3, WS_EX_CLIENTEDGE);
@@ -278,7 +284,8 @@ private:
         for (const auto& child : controls_) { if (child.id == 421) move(child.window, w - 136, 503, 112, 30); if (child.id == 420) move(child.window, left, h - 74, 136, 36); }
         move(settingNote_, left, 402, column - 30, 72);
         move(closeLabel_, left, 546, column - 30, 22); move(closeChoice_, left, 571, column - 32, 180);
-        move(notificationChoice_, left, 610, available, 28);
+        move(notificationChoice_, left, 610, column - 12, 28);
+        move(startupChoice_, left + column + 10, 610, column - 10, 28);
         move(GetDlgItem(window_, 422), left + 148, h - 74, 148, 36); move(GetDlgItem(window_, 423), left + 308, h - 74, 174, 36);
         move(GetDlgItem(window_, 424), left + 494, h - 74, std::min(226, available - 494), 36);
         move(intervalLabel_, left + column + 10, 546, column - 10, 22); move(intervalChoice_, left + column + 10, 571, column - 10, 200);
@@ -291,6 +298,7 @@ private:
     /// Switch pages, keeping their visible controls and their diagnostic snapshots consistent.
     void switchPage(int page) {
         page_ = page;
+        if (page == 3) refreshStartup();
         for (const auto& child : controls_) if (child.page >= 0) ShowWindow(child.window, child.page == page ? SW_SHOW : SW_HIDE);
         if (page == 1) refreshRecordings(true);
         if (page == 2) refreshLogs(true);
@@ -328,8 +336,13 @@ private:
     /// Show the selected setting's purpose in a scrollable inline note, without touching its value.
     void showFieldHelp(int id) {
         focusedSetting_ = id;
-        const char* keys[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "close", "health", "external", "notifications"};
-        if (id >= 400 && id <= 414) {
+        const char* keys[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "close", "health", "external", "notifications", "startup"};
+        if (id == 415) {
+            const auto state = currentStartup().read();
+            const char* status = state.error ? "startup.unavailable" : state.enabled ? state.thisCopy ? "startup.enabled" : "startup.other_copy" : "startup.disabled";
+            const wstring message = wstring(uiText(status)) + L"\r\n" + uiText("help.field.startup");
+            SetWindowTextW(settingNote_, message.c_str());
+        } else if (id >= 400 && id <= 414) {
             const string key = string("help.field.") + keys[id - 400];
             SetWindowTextW(settingNote_, uiText(key.c_str()));
         } else SetWindowTextW(settingNote_, uiText(g_cfg.errors().empty() ? "settings.note" : "first_run.note"));
@@ -341,8 +354,8 @@ private:
         const int topic = static_cast<int>(SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0));
         wstring body;
         if (topic == 1) {
-            const char* fields[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "close", "health", "external", "language", "notifications"};
-            const char* configs[] = {"phone_ip", "phone_port", "phone_user", "phone_pass_dpapi", "advertise_ip", "control_port", "hook_port", "udp_port_start", "udp_port_end", "idle_timeout", "record_dir", "close_action", "health_interval", "hook_port=0", "config.ini.ui", "tray_notifications"};
+            const char* fields[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "close", "health", "external", "language", "notifications", "startup"};
+            const char* configs[] = {"phone_ip", "phone_port", "phone_user", "phone_pass_dpapi", "advertise_ip", "control_port", "hook_port", "udp_port_start", "udp_port_end", "idle_timeout", "record_dir", "close_action", "health_interval", "hook_port=0", "config.ini.ui", "tray_notifications", "Windows"};
             for (size_t index = 0; index < std::size(fields); ++index) {
                 body += wstring(uiText((string("field.") + fields[index]).c_str())) + L" [" + utf8ToWide(configs[index]) + L"]\r\n";
                 body += uiText((string("help.field.") + fields[index]).c_str()); body += L"\r\n\r\n";
@@ -725,6 +738,34 @@ private:
         MessageBoxW(window_, uiText(ok ? "setup.exported" : "message.export_failed"), L"PhoneRecord", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
     }
 
+    /// Bind the Windows login entry to this executable and the active configuration file.
+    UserStartup currentStartup() const {
+        wchar_t executable[32768]{};
+        const DWORD length = GetModuleFileNameW(NULL, executable, static_cast<DWORD>(std::size(executable)));
+        return UserStartup(length && length < std::size(executable) ? executable : L"", g_configPath);
+    }
+
+    /// Reflect Windows registration on entry/activation, including registrations of another copy.
+    void refreshStartup() {
+        if (!startupChoice_) return;
+        const auto state = currentStartup().read();
+        SendMessageW(startupChoice_, BM_SETCHECK, state.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+        EnableWindow(startupChoice_, state.error == ERROR_SUCCESS);
+        if (focusedSetting_ == 415) showFieldHelp(415);
+    }
+
+    /// Apply an explicit checkbox action immediately, independently of unsaved phone settings.
+    void changeStartup() {
+        const bool enabled = SendMessageW(startupChoice_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        const LONG result = currentStartup().setEnabled(enabled);
+        refreshStartup(); showFieldHelp(415);
+        if (result != ERROR_SUCCESS) {
+            LOGE("AUTOSTART_CHANGE_FAILED requested=%d win32=%ld", enabled, result);
+            const wstring message = wstring(uiText(result == ERROR_FILENAME_EXCED_RANGE ? "startup.path_too_long" : "startup.failed")) + L"\r\nWin32: " + std::to_wstring(result);
+            MessageBoxW(window_, message.c_str(), L"PhoneRecord", MB_OK | MB_ICONERROR);
+        } else LOGI("AUTOSTART_CHANGED enabled=%d verified=1", enabled);
+    }
+
     /// Validate a separate settings copy and preserve the live socket configuration until restart.
     void saveSettings() {
         Config candidate = g_cfg; candidate.formatError = false;
@@ -784,6 +825,7 @@ private:
         if (id == 423 || id == 804) { requestCompatibility(); return; }
         if (id == 805) { copyReport(true); return; }
         if (id == 414) { showFieldHelp(414); return; }
+        if (id == 415) { changeStartup(); return; }
         if (id == 413) { EnableWindow(fields_[6], SendMessageW(externalChoice_, BM_GETCHECK, 0, 0) != BST_CHECKED); showFieldHelp(413); return; }
         if (id == 421) { browse(); return; }
         if (id == 211 || id == 212 || id == 213) {
@@ -880,6 +922,7 @@ private:
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam) {
         switch (message) {
         case WM_CREATE: create(); return 0;
+        case WM_ACTIVATE: if (LOWORD(wparam) != WA_INACTIVE) refreshStartup(); break;
         case WM_SIZE: if (font_) layout(); return 0;
         case WM_GETMINMAXINFO: { auto* limits = reinterpret_cast<MINMAXINFO*>(lparam); limits->ptMinTrackSize.x = px(980); limits->ptMinTrackSize.y = px(760); return 0; }
         case WM_DPICHANGED: { dpi_ = HIWORD(wparam); destroyFonts(); createFonts(); for (const auto& child : controls_) SendMessageW(child.window, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE); const RECT* area = reinterpret_cast<RECT*>(lparam); SetWindowPos(window_, NULL, area->left, area->top, area->right - area->left, area->bottom - area->top, SWP_NOZORDER | SWP_NOACTIVATE); layout(); return 0; }
@@ -893,6 +936,7 @@ private:
         case WM_CTLCOLORSTATIC: SetBkColor(reinterpret_cast<HDC>(wparam), RGB(246, 248, 252)); SetTextColor(reinterpret_cast<HDC>(wparam), RGB(68, 88, 114)); return reinterpret_cast<LRESULT>(background_);
         case WM_CTLCOLOREDIT: SetBkColor(reinterpret_cast<HDC>(wparam), RGB(255, 255, 255)); SetTextColor(reinterpret_cast<HDC>(wparam), RGB(31, 51, 77)); return reinterpret_cast<LRESULT>(white_);
         case WM_COMMAND:
+            if (HIWORD(wparam) == BN_SETFOCUS && LOWORD(wparam) == 415) { showFieldHelp(415); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 430) { changeLanguage(); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 800) { refreshHelp(); return 0; }
             if (HIWORD(wparam) == EN_SETFOCUS && LOWORD(wparam) >= 400 && LOWORD(wparam) <= 410) { showFieldHelp(LOWORD(wparam)); return 0; }
@@ -985,6 +1029,8 @@ private:
     const int intervals_[5] = {0, 30, 60, 120, 300};
     /// Locale, trigger mode and embedded reference controls, all owned by the UI thread.
     HWND languageChoice_ = NULL, externalChoice_ = NULL, helpTopic_ = NULL, helpText_ = NULL, notificationChoice_ = NULL;
+    /// Immediate current-user login preference, read from Windows rather than config.ini.
+    HWND startupChoice_ = NULL;
     /// Avoid resetting report scroll position when unrelated log or RTP counters change.
     uint64_t lastCompatRevision_ = 0;
     bool lastCompatRuntime_ = false;

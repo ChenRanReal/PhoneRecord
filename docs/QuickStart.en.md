@@ -1,4 +1,4 @@
-# PhoneRecord 2.4 quick start
+# PhoneRecord 2.5 quick start
 
 PhoneRecord automatically records connected calls from a compatible network-recording phone to a Windows PC. Recordings play inside the app. No Python installation is needed.
 
@@ -24,6 +24,8 @@ The event port and recording server port have different roles. Event 18080 does 
 An unknown interface means an adapter may be required; it does not establish that the phone hardware cannot record. An unreadable page requires checking the web port, permissions, session and connection. Inspection waits during a call. Unsaved/unapplied connection changes require saving and restarting first.
 
 For daily use, keep the PC awake and the app running, then answer/dial normally. Tray balloons are **off by default** and can be enabled in Settings. Closing behavior is configurable: tray, taskbar minimize or exit. Use the tray icon to restore the window. The lower-left/tray Exit command actually stops the app.
+
+**Startup at sign-in is off by default.** In Settings, check **Start at sign-in (background)** to register it for your current Windows user. Checking or clearing it applies immediately without Save. It opens in the tray at your next sign-in; double-click the tray icon to open. The preference stays with Windows, rather than a copied configuration. Put the exe in a permanent folder first. After moving it, turn this option off and on to update its path. If you previously created a startup BAT, shortcut or scheduled task, remove that older entry separately. If disabled through Windows Startup apps, re-enable it in Windows. Incomplete settings or an unavailable tray show the main window.
 
 For problems, follow the recording chain and Diagnostics guidance. A missing trigger usually points to callbacks/event connectivity; missing audio after control points to the recording destination, codec or UDP connectivity. Use Copy compatibility report for an address-free checklist. General diagnostic reports can still contain technical environment details.
 
