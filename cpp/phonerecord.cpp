@@ -6,6 +6,9 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#if defined(_WIN64)
+#error PhoneRecord release manifests require an x86 build. Select the x86 MSVC tools.
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -56,6 +59,15 @@ typedef std::wstring wstring;
 
 // 已分配的控制会话数量，仅用于去重与退出协调；有效 RTP 另由诊断状态统计。
 static std::atomic<long> g_sessionCount{0};
+
+/// Serializes admission of new calls/control sessions against an explicit update shutdown.
+static std::mutex g_updateAdmission;
+/// Protected by g_updateAdmission; blocks new work only during a user-confirmed installation.
+static bool g_updateInstalling = false;
+/// A replacement child accepts no new calls until its native startup has been acknowledged.
+static bool g_updateStartupPending = false;
+/// Established-call acknowledgements which have not yet entered the command coordinator.
+static std::atomic<int> g_pendingCallEvents{0};
 
 static string nowStamp(const char* fmt = "%Y-%m-%d %H:%M:%S") {
     SYSTEMTIME st;

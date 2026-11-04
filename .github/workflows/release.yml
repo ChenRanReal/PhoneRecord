@@ -1,0 +1,76 @@
+name: Publish stable Windows release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-stable
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Validate stable tag and signing configuration
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$') { throw 'Expected stable vX.Y.Z tag.' }
+          if (-not $env:UPDATE_SIGNING_KEY) { throw 'Missing UPDATE_SIGNING_KEY repository secret.' }
+          $header = Get-Content -Raw -Encoding utf8 cpp/product_version.h
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          if (-not $header.Contains('#define PHONERECORD_VERSION "' + $version + '"')) { throw 'Tag must match product_version.h.' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release commit must belong to main.' }
+      - name: Build native x86 desktop
+        shell: cmd
+        run: cpp\build.bat
+      - name: Verify update protocol and synthetic recordings
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
+        run: |
+          ./tools/Test-Updates.ps1 -SkipTray
+          if ($LASTEXITCODE -ne 0) { throw 'Update tests failed.' }
+          python tests/product_smoke.py --output docs/probe/release/product
+          if ($LASTEXITCODE -ne 0) { throw 'Recording tests failed.' }
+      - name: Sign manifest for the verified executable
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: ./tools/New-UpdateManifest.ps1 -Version $env:GITHUB_REF_NAME.Substring(1)
+      - name: Create draft, upload all assets, then publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release create $tag --verify-tag --draft --generate-notes --title "PhoneRecord $tag" cpp/PhoneRecord.exe cpp/PhoneRecord.exe.sha256 cpp/update-manifest.txt cpp/update-manifest.sig
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation/upload failed. No existing release will be overwritten.' }
+          $release = gh release view $tag --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify uploaded assets.' }
+          foreach ($name in @('PhoneRecord.exe','PhoneRecord.exe.sha256','update-manifest.txt','update-manifest.sig')) {
+            if (-not ($release.assets | Where-Object name -eq $name)) { throw "Missing release asset: $name" }
+          }
+          $existing = gh release list --limit 100 --json tagName,isDraft,isPrerelease | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot compare existing stable releases.' }
+          $newVersion = [version]$tag.Substring(1)
+          $newer = @($existing | Where-Object { -not $_.isDraft -and -not $_.isPrerelease -and $_.tagName -match '^v\d+\.\d+\.\d+$' -and [version]$_.tagName.Substring(1) -gt $newVersion })
+          $latest = if ($newer.Count -eq 0) { '--latest' } else { '--latest=false' }
+          gh release edit $tag --draft=false $latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release remains a draft; publishing failed.' }

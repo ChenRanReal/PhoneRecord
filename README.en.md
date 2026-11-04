@@ -2,12 +2,13 @@
 
 # PhoneRecord — Call Recording Workbench
 
-The current C++ desktop version is **2.6.0**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+The current C++ desktop source version is **2.7.0**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+Version 2.7.0 adds [updates](docs/自動更新與發布.md): periodic background checks, separate update balloons and a persistent tray arrow. You choose when to download and restart while idle. Install an updater-enabled version manually once; official binaries are published under [GitHub Releases](https://github.com/ChenRanReal/PhoneRecord/releases).
 Version 2.6.0 adds historical call titles: select a recording and choose Rename or press F2. Titles remain searchable after reopening. Save blank to restore the original title; original contacts, numbers, times and audio files are retained.
 Version 2.5.0 adds optional startup at sign-in. The Settings checkbox applies immediately and defaults to off. When enabled, the app starts in the tray. After moving the exe, turn the option off and on to update its path.
 Version 2.4.1 adds a phone setup script: preview first, then after confirmation configure network recording and the two callbacks, verify by reading the settings back, and keep an encrypted backup. The original icon and the three-language interface remain.
 
-[Download the Windows program](https://github.com/ChenRanReal/PhoneRecord/raw/refs/heads/main/cpp/PhoneRecord.exe) · [Icons and assets](cpp/assets/README.md) (Chinese)
+[Windows releases](https://github.com/ChenRanReal/PhoneRecord/releases) · [Legacy standalone download](https://github.com/ChenRanReal/PhoneRecord/raw/refs/heads/main/cpp/PhoneRecord.exe) · [Icons and assets](cpp/assets/README.md) (Chinese)
 
 **For a first run, start with [快速上手](docs/快速上手.md)** (Chinese) and complete PC setup, phone setup, the compatibility check, and a two-way listening test in that order. An [English quick start](docs/QuickStart.en.md) is also available.
 

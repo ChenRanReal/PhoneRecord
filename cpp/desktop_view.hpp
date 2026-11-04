@@ -6,6 +6,8 @@
 #include "resource.h"
 #include "phone_setup_runtime.hpp"
 #include "user_startup.hpp"
+#include "update_service.hpp"
+#include "update_installer.hpp"
 
 /// Load a shared embedded product icon at the system's large or small native size.
 static HICON applicationIcon(bool smallSize = false) {
@@ -43,11 +45,15 @@ static void desktopRecordingStopped() {
 
 /// Product native desktop view; every control remains on the owning GUI thread.
 class DesktopView {
+#ifdef PHONERECORD_UPDATE_TESTING
+    /// Observe the real owned tray controls in the separate native regression executable.
+    friend struct UpdateTrayFixture;
+#endif
 public:
     /// Adopt a system-DPI scale; native resources are created in WM_CREATE.
     explicit DesktopView(int dpi, HANDLE stopSignal = NULL) : dpi_(dpi), stopSignal_(stopSignal) {}
     /// Release every owned GDI object after the native window has been destroyed.
-    ~DesktopView() { destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
+    ~DesktopView() { updates_.stop(); if (updateIcon_) DestroyIcon(updateIcon_); destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
 
     /// Hide a login-started window only when its tray entry can restore it.
     bool hasTrayIcon() const { return trayAdded_; }
@@ -147,6 +153,7 @@ private:
         g_mainWindow = window_;
         createFonts(); background_ = CreateSolidBrush(RGB(246, 248, 252)); white_ = CreateSolidBrush(RGB(255, 255, 255));
         button("nav.overview", 100, -1); button("nav.recordings", 101, -1); button("nav.diagnostics", 102, -1); button("nav.settings", 103, -1); button("nav.help", 104, -1);
+        button("nav.updates", 105, -1);
         button("button.exit", 902, -1);
         languageChoice_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 430, -1);
         for (const wchar_t* language : {L"简体中文", L"繁體中文", L"English"}) SendMessageW(languageChoice_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(language));
@@ -216,9 +223,24 @@ private:
         button("button.compatibility", 804, 4); button("button.compatibility_copy", 805, 4);
         helpText_ = control(L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 801, 4, WS_EX_CLIENTEDGE);
         refreshHelp(); showFieldHelp(-1);
+        button("update.check", 820, 5); button("update.download", 821, 5); button("update.install", 822, 5);
+        localizedControl(L"STATIC", "update.interval", SS_LEFT, 828, 5);
+        updateInterval_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 824, 5);
+        for (const char* key : {"update.off", "update.hour1", "update.hour6", "update.hour12", "update.hour24"}) SendMessageW(updateInterval_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText(key)));
+        updateBalloons_ = localizedControl(L"BUTTON", "update.balloons", WS_TABSTOP | BS_AUTOCHECKBOX, 825, 5);
+        updateStatus_ = control(L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 826, 5, WS_EX_CLIENTEDGE);
+        updateNotes_ = control(L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 827, 5, WS_EX_CLIENTEDGE);
+        localizedControl(L"STATIC", "update.explanation", SS_LEFT, 829, 5);
+        taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
         tray_.cbSize = sizeof(tray_); tray_.hWnd = window_; tray_.uID = 1; tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         tray_.uCallbackMessage = WM_APP + 31; tray_.hIcon = applicationIcon(true); wcscpy_s(tray_.szTip, L"PhoneRecord 2");
         trayAdded_ = Shell_NotifyIconW(NIM_ADD, &tray_) != FALSE;
+        updates_.start(window_, g_configPath, g_offline);
+        const auto preferences = updates_.preferences();
+        const int choices[] = {0, 1, 6, 12, 24};
+        for (int index = 0; index < 5; ++index) if (choices[index] == preferences.hours) SendMessageW(updateInterval_, CB_SETCURSEL, index, 0);
+        SendMessageW(updateBalloons_, BM_SETCHECK, preferences.balloons ? BST_CHECKED : BST_UNCHECKED, 0);
+        refreshUpdates(true);
         SetTimer(window_, 1, 200, NULL); layout(); updatePlayer(); refreshLogs(true); refreshRecordings(true);
     }
 
@@ -243,6 +265,12 @@ private:
             if (child.id == 505) move(child.window, w - 182, 464, 158, 28);
         }
         move(languageChoice_, 14, h - 139, 148, 28);
+        move(GetDlgItem(window_, 105), 14, h - 211, 148, 34);
+        move(GetDlgItem(window_, 828), left, 110, 190, 24); move(updateInterval_, left + 200, 106, 180, 200);
+        move(updateBalloons_, left + 400, 106, available - 400, 30);
+        move(updateStatus_, left, 152, available, 98);
+        move(GetDlgItem(window_, 820), left, 264, 160, 34); move(GetDlgItem(window_, 821), left + 174, 264, 160, 34); move(GetDlgItem(window_, 822), left + 348, 264, 220, 34);
+        move(GetDlgItem(window_, 829), left, 312, available, 88); move(updateNotes_, left, 414, available, h - 452);
         if (HWND link = GetDlgItem(window_, 106)) {
             HDC dc = GetDC(window_);
             const int textWidth = versionLabelWidth(dc);
@@ -314,7 +342,7 @@ private:
         layout();
         // Owner-drawn children do not inherit their parent's invalidation. Explicitly
         // repaint all menu items so precisely one item reflects the current page.
-        for (int id = 100; id <= 104; ++id) RedrawWindow(GetDlgItem(window_, id), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+        for (int id = 100; id <= 105; ++id) RedrawWindow(GetDlgItem(window_, id), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
     }
 
     /// Refill a translated combo while preserving its semantic selected index.
@@ -439,6 +467,8 @@ private:
         translateCombo(closeChoice_, {"close.tray", "close.minimize", "close.exit"});
         translateCombo(intervalChoice_, {"interval.off", "interval.30", "interval.60", "interval.120", "interval.300"}, true);
         translateCombo(helpTopic_, {"help.topic.start", "help.topic.fields", "help.topic.ports", "help.topic.devices", "help.topic.diagnostics", "help.topic.compatibility", "help.topic.setup"});
+        translateCombo(updateInterval_, {"update.off", "update.hour1", "update.hour6", "update.hour12", "update.hour24"});
+        refreshUpdates(true);
         SendMessageW(recordingSearch_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("search.recordings")));
         SendMessageW(logSearch_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("search.logs")));
         if (!player_.loaded()) SetWindowTextW(playerCaption_, uiText("player.empty"));
@@ -483,8 +513,8 @@ private:
         drawText(dc, uiText("app.subtitle"), 21, 62, 150, 42, RGB(153, 175, 202), smallFont_, DT_LEFT | DT_TOP | DT_WORDBREAK);
         drawText(dc, uiText("field.language"), 14, height() - 164, 148, 22, RGB(153, 175, 202), smallFont_);
         drawText(dc, L"v" + utf8ToWide(kProductVersion), 21, height() - 42, versionLabelWidth(dc) + 4, 22, RGB(153, 175, 202), smallFont_);
-        const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help"};
-        const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle"};
+        const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help", "nav.updates"};
+        const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle", "update.subtitle"};
         drawText(dc, uiText(titles[page_]), 200, 22, width() - 430, 40, RGB(23, 40, 65), titleFont_);
         drawText(dc, uiText(subtitles[page_]), 200, 66, width() - 224, 25, RGB(100, 116, 139), font_);
         const auto state = diagnosticSnapshot();
@@ -628,7 +658,7 @@ private:
             if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &item->rcItem);
             return;
         }
-        const bool nav = (id >= 100 && id <= 104) || id == 902, active = id >= 100 && id <= 104 && id - 100 == page_;
+        const bool nav = (id >= 100 && id <= 105) || id == 902, active = id >= 100 && id <= 105 && id - 100 == page_;
         const bool disabled = (item->itemState & ODS_DISABLED) != 0, pressed = (item->itemState & ODS_SELECTED) != 0;
         COLORREF fill = nav ? active ? RGB(43, 105, 230) : RGB(20, 32, 51) : id == 500 || id == 420 ? RGB(43, 105, 230) : RGB(255, 255, 255);
         if (pressed) fill = nav || id == 500 || id == 420 ? RGB(29, 79, 180) : RGB(232, 239, 250);
@@ -884,7 +914,12 @@ private:
     /// Dispatch user operations without running network requests on the GUI thread.
     void command(int id) {
         if (id == 9900) { capturePreview(); return; }
-        if (id >= 100 && id <= 104) { switchPage(id - 100); return; }
+        if (id >= 100 && id <= 105) { switchPage(id - 100); if (id == 105) refreshUpdates(true); return; }
+        if (id == 820 || id == 903) { updates_.request(); refreshUpdates(true); return; }
+        if (id == 821) { updates_.request(true); return; }
+        if (id == 822) { installUpdate(); return; }
+        if (id == 904) { command(901); switchPage(5); refreshUpdates(true); return; }
+        if (id == 825) { configureUpdates(); return; }
         if (id == 502) { g_commands.enqueue("local"); return; }
         if (id == 503) { g_commands.enqueue("phone"); return; }
         if (id == 505) { refreshLogs(true); return; }
@@ -990,16 +1025,122 @@ private:
         DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(window_, reference);
     }
 
+    /// Persist only update preferences, independently of any unsaved connection draft.
+    void configureUpdates() {
+        const int choices[] = {0, 1, 6, 12, 24};
+        const LRESULT selected = SendMessageW(updateInterval_, CB_GETCURSEL, 0, 0);
+        if (selected < 0 || selected >= 5) return;
+        if (!updates_.configure(choices[selected], SendMessageW(updateBalloons_, BM_GETCHECK, 0, 0) == BST_CHECKED)) {
+            const auto preferences = updates_.preferences();
+            for (int index = 0; index < 5; ++index) if (choices[index] == preferences.hours) SendMessageW(updateInterval_, CB_SETCURSEL, index, 0);
+            SendMessageW(updateBalloons_, BM_SETCHECK, preferences.balloons ? BST_CHECKED : BST_UNCHECKED, 0);
+            MessageBoxW(window_, uiText("update.preference_error"), L"PhoneRecord", MB_OK | MB_ICONERROR);
+        }
+        refreshUpdates(true);
+    }
+
+    /// Create an owned small icon with a solid arrow badge; alpha remains readable on either theme.
+    HICON createUpdateIcon() {
+        const int width = GetSystemMetrics(SM_CXSMICON), height = GetSystemMetrics(SM_CYSMICON);
+        BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+        HDC dc = CreateCompatibleDC(NULL); DWORD* pixels = NULL;
+        HBITMAP color = CreateDIBSection(dc, &info, DIB_RGB_COLORS, reinterpret_cast<void**>(&pixels), NULL, 0);
+        HBITMAP mask = CreateBitmap(width, height, 1, 1, NULL);
+        if (!dc || !color || !mask || !pixels) { if (color) DeleteObject(color); if (mask) DeleteObject(mask); if (dc) DeleteDC(dc); return NULL; }
+        HGDIOBJ previous = SelectObject(dc, color); ZeroMemory(pixels, width * height * sizeof(DWORD));
+        DrawIconEx(dc, 0, 0, applicationIcon(true), width, height, 0, NULL, DI_NORMAL);
+        const int badge = std::max(9, width * 2 / 3), left = width - badge, top = height - badge, center = badge / 2;
+        for (int y = 0; y < badge; ++y) for (int x = 0; x < badge; ++x) {
+            const int dx = x - center, dy = y - center;
+            if (dx * dx + dy * dy > center * center) continue;
+            const bool arrow = (y >= badge / 4 && y <= badge / 2 && abs(dx) <= y - badge / 4) || (abs(dx) <= std::max(1, badge / 10) && y >= badge / 3 && y < badge * 4 / 5);
+            pixels[(top + y) * width + left + x] = arrow ? 0xffffffff : 0xff087fbd;
+        }
+        SelectObject(dc, previous);
+        ICONINFO icon{}; icon.fIcon = TRUE; icon.hbmColor = color; icon.hbmMask = mask;
+        HICON result = CreateIconIndirect(&icon); DeleteObject(color); DeleteObject(mask); DeleteDC(dc); return result;
+    }
+
+    /// Refresh update controls and persistent tray availability; never performs a network request.
+    void refreshUpdates(bool force = false) {
+        const auto state = updates_.state(); const auto preferences = updates_.preferences();
+        const bool available = !state.manifest.version.empty();
+        if (force || state.revision != updateRevision_) {
+            updateRevision_ = state.revision;
+            wstring status = wstring(uiText("update.current")) + L" " + utf8ToWide(kProductVersion);
+            if (available) status += L"\r\n" + wstring(uiText("update.new_version")) + L" " + utf8ToWide(state.manifest.version);
+            status += L"\r\n" + wstring(uiText(state.status.c_str()));
+            if (state.status == "update.downloading") status += L" " + std::to_wstring(state.percent) + L"%";
+            if (!state.checkedAt.empty()) status += L"\r\n" + wstring(uiText("update.checked_at")) + L" " + utf8ToWide(state.checkedAt);
+            SetWindowTextW(updateStatus_, status.c_str());
+            const wstring notes = wstring(uiText("update.notes_language")) + L"\r\n\r\n" + (state.notes.empty() ? uiText("update.no_notes") : utf8ToWide(state.notes));
+            if (text(updateNotes_) != wideToUtf8(notes)) SetWindowTextW(updateNotes_, notes.c_str());
+            EnableWindow(GetDlgItem(window_, 820), !state.busy && !g_offline);
+            EnableWindow(GetDlgItem(window_, 821), available && !state.busy && state.staged.empty() && !g_offline);
+            SetWindowTextW(GetDlgItem(window_, 105), uiText(available ? "update.nav_available" : "nav.updates"));
+            if (available && !updateIcon_) updateIcon_ = createUpdateIcon();
+            tray_.hIcon = available && updateIcon_ ? updateIcon_ : applicationIcon(true);
+            const wstring tip = L"PhoneRecord " + utf8ToWide(kProductVersion) + (available ? L" — " + wstring(uiText("update.available")) + L" " + utf8ToWide(state.manifest.version) : L"");
+            wcsncpy_s(tray_.szTip, tip.c_str(), _TRUNCATE); tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            if (trayAdded_) Shell_NotifyIconW(NIM_MODIFY, &tray_);
+            RedrawWindow(GetDlgItem(window_, 105), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+        }
+        const auto recording = diagnosticSnapshot();
+        EnableWindow(GetDlgItem(window_, 822), !state.staged.empty() && !state.busy && !recording.callActive && g_sessionCount == 0 && g_activeRecordings == 0 && !recording.busy && !analysisWorker_.joinable() && !g_offline);
+        if (available && !state.busy && !g_offline && preferences.balloons && preferences.notified != state.manifest.version &&
+            lastUpdateBalloon_ != state.manifest.version && !recording.callActive && g_activeRecordings == 0 && trayAdded_ && !trayBalloonActive_ && GetTickCount64() >= nextBalloon_) {
+            NOTIFYICONDATAW info = tray_; info.uFlags = NIF_INFO; info.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME | NIIF_NOSOUND;
+            const wstring title = wstring(uiText("update.available")) + L" " + utf8ToWide(state.manifest.version);
+            wcsncpy_s(info.szInfoTitle, title.c_str(), _TRUNCATE); wcsncpy_s(info.szInfo, uiText("update.balloon_body"), _TRUNCATE);
+            nextBalloon_ = GetTickCount64() + 60000;
+            if (Shell_NotifyIconW(NIM_MODIFY, &info)) {
+                trayBalloonActive_ = updateBalloonActive_ = true; lastUpdateBalloon_ = state.manifest.version;
+                if (!updates_.markNotified(state.manifest.version)) LOGW("UPDATE_NOTIFICATION_PREFERENCE_SAVE_FAILED");
+                LOGI("UPDATE_BALLOON_REQUESTED version=%s", state.manifest.version.c_str());
+            }
+        }
+    }
+
+    /// Confirm an explicit service interruption, then atomically refuse installation if a call won the race.
+    void installUpdate() {
+        const auto state = updates_.state();
+        if (state.busy || state.staged.empty() || g_offline) return;
+        if (MessageBoxW(window_, uiText("update.confirm_install"), L"PhoneRecord", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+        if (!updates_.reserveInstall(state)) { MessageBoxW(window_, uiText("update.prepare_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return; }
+        bool busy = false;
+        {
+            std::lock_guard<std::mutex> admission(g_updateAdmission);
+            const auto recording = diagnosticSnapshot();
+            busy = recording.callActive || recording.busy || g_sessionCount > 0 || g_activeRecordings > 0 || g_pendingCallEvents > 0 || analysisWorker_.joinable();
+            if (!busy) g_updateInstalling = true;
+        }
+        if (busy) { updates_.cancelInstall(); MessageBoxW(window_, uiText("update.call_busy"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
+        if (!updateBeginInstall(state, g_configPath)) {
+            { std::lock_guard<std::mutex> admission(g_updateAdmission); g_updateInstalling = false; }
+            updates_.cancelInstall();
+            MessageBoxW(window_, uiText("update.prepare_failed"), L"PhoneRecord", MB_OK | MB_ICONERROR); return;
+        }
+        LOGI("UPDATE_INSTALL_CONFIRMED version=%s", state.manifest.version.c_str());
+        updates_.preserveStaging();
+        DestroyWindow(window_);
+    }
+
     /// Show a bounded native tray notification without caller identifiers.
     void balloon(const wchar_t* message) {
         if (!g_trayNotifications || g_offline) { LOGD("TRAY_NOTIFICATION_SUPPRESSED preference=%d offline=%d", g_trayNotifications.load(), g_offline); return; }
         if (!trayAdded_) return;
+        if (trayBalloonActive_) return;
         NOTIFYICONDATAW info = tray_; info.uFlags = NIF_INFO; info.dwInfoFlags = NIIF_INFO;
-        wcscpy_s(info.szInfoTitle, L"PhoneRecord"); wcsncpy_s(info.szInfo, message, _TRUNCATE); const bool sent = Shell_NotifyIconW(NIM_MODIFY, &info) != FALSE; LOGD("TRAY_NOTIFICATION_REQUESTED sent=%d", sent);
+        wcscpy_s(info.szInfoTitle, L"PhoneRecord"); wcsncpy_s(info.szInfo, message, _TRUNCATE); const bool sent = Shell_NotifyIconW(NIM_MODIFY, &info) != FALSE; if (sent) { trayBalloonActive_ = true; updateBalloonActive_ = false; } LOGD("TRAY_NOTIFICATION_REQUESTED sent=%d", sent);
     }
 
     /// Native message handler; background tasks communicate only through PostMessageW.
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam) {
+        if (taskbarCreated_ && message == taskbarCreated_) {
+            tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP; trayAdded_ = Shell_NotifyIconW(NIM_ADD, &tray_) != FALSE;
+            refreshUpdates(true); return 0;
+        }
         switch (message) {
         case WM_CREATE: create(); return 0;
         case WM_ACTIVATE: if (LOWORD(wparam) != WA_INACTIVE) refreshStartup(); break;
@@ -1018,6 +1159,7 @@ private:
         case WM_COMMAND:
             if (HIWORD(wparam) == BN_SETFOCUS && LOWORD(wparam) == 415) { showFieldHelp(415); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 430) { changeLanguage(); return 0; }
+            if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 824) { configureUpdates(); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 800) { refreshHelp(); return 0; }
             if (HIWORD(wparam) == EN_SETFOCUS && LOWORD(wparam) >= 400 && LOWORD(wparam) <= 410) { showFieldHelp(LOWORD(wparam)); return 0; }
             if (HIWORD(wparam) == CBN_SETFOCUS && (LOWORD(wparam) == 411 || LOWORD(wparam) == 412)) { showFieldHelp(LOWORD(wparam)); return 0; }
@@ -1064,17 +1206,23 @@ private:
             EnableWindow(GetDlgItem(window_, 423), !state.busy && !state.callActive && sessions == 0 && inspection.verdict != "running");
             EnableWindow(GetDlgItem(window_, 805), inspection.verdict != "idle" && inspection.verdict != "running");
             if (page_ == 4 && SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5 && (inspection.revision != lastCompatRevision_ || compatibilityRuntimeVerified(inspection, state, sessions) != lastCompatRuntime_)) refreshHelp();
-            updatePlayer(); refreshLogs(false);
+            updatePlayer(); refreshLogs(false); refreshUpdates();
             if (state.files != lastFiles_) { lastFiles_ = state.files; if (page_ == 1) refreshRecordings(true); }
             return 0;
         }
         case kMediaNotification: balloon(uiText("message.media")); InvalidateRect(window_, NULL, FALSE); return 0;
         case kFileNotification: if (page_ == 1) refreshRecordings(true); InvalidateRect(window_, NULL, FALSE); return 0;
         case WM_APP + 23: if (analysisWorker_.joinable()) analysisWorker_.join(); EnableWindow(GetDlgItem(window_, 213), TRUE); refreshRecordings(true); if (!wparam) MessageBoxW(window_, uiText("message.analyse_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return 0;
+        case WM_APP + 24: refreshUpdates(); return 0;
         case WM_APP + 31:
+            if (LOWORD(lparam) == NIN_BALLOONUSERCLICK) { if (updateBalloonActive_) command(904); trayBalloonActive_ = updateBalloonActive_ = false; return 0; }
+            if (LOWORD(lparam) == NIN_BALLOONTIMEOUT || LOWORD(lparam) == NIN_BALLOONHIDE) trayBalloonActive_ = updateBalloonActive_ = false;
             if (LOWORD(lparam) == WM_LBUTTONDBLCLK) command(901);
             else if (LOWORD(lparam) == WM_RBUTTONUP || LOWORD(lparam) == WM_CONTEXTMENU) {
                 HMENU menu = CreatePopupMenu(); AppendMenuW(menu, MF_STRING, 901, uiText("tray.show")); AppendMenuW(menu, MF_SEPARATOR, 0, NULL); AppendMenuW(menu, MF_STRING, 902, uiText("tray.exit"));
+                const auto update = updates_.state();
+                InsertMenuW(menu, 1, MF_BYPOSITION | MF_STRING, 904, uiText(update.manifest.version.empty() ? "nav.updates" : update.staged.empty() ? "update.nav_available" : "update.ready"));
+                InsertMenuW(menu, 2, MF_BYPOSITION | MF_STRING | (update.busy || g_offline ? MF_GRAYED : 0), 903, uiText("update.check"));
                 POINT cursor{}; GetCursorPos(&cursor); SetForegroundWindow(window_); TrackPopupMenu(menu, TPM_RIGHTBUTTON, cursor.x, cursor.y, 0, window_, NULL); DestroyMenu(menu);
             }
             return 0;
@@ -1084,6 +1232,7 @@ private:
             else { ShowWindow(window_, SW_HIDE); balloon(uiText("message.minimized")); }
             return 0;
         case WM_DESTROY:
+            updates_.stop();
             player_.close();
             g_mainWindow = NULL; KillTimer(window_, 1);
             if (trayAdded_) Shell_NotifyIconW(NIM_DELETE, &tray_);
@@ -1153,4 +1302,15 @@ private:
     NOTIFYICONDATAW tray_{};
     /// Whether shell notification registration succeeded.
     bool trayAdded_ = false;
+    /// Update worker and page controls are owned for the complete window lifetime.
+    UpdateService updates_;
+    HWND updateInterval_ = NULL, updateBalloons_ = NULL, updateStatus_ = NULL, updateNotes_ = NULL;
+    /// Shell recreation, snapshot invalidation and update-balloon routing.
+    UINT taskbarCreated_ = 0;
+    uint64_t updateRevision_ = static_cast<uint64_t>(-1), nextBalloon_ = 0;
+    bool updateBalloonActive_ = false;
+    bool trayBalloonActive_ = false;
+    string lastUpdateBalloon_;
+    /// Owned overlay icon, independent of the shared application icon.
+    HICON updateIcon_ = NULL;
 };

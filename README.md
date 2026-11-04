@@ -2,12 +2,13 @@
 
 # PhoneRecord — 通话录音工作台
 
-当前 C++ 桌面版本为 **2.6.0**。在 Windows 接收兼容话机的网络录音，接通后自动录制、挂断后保存，并提供内建播放、健康检查与故障建议。
+当前 C++ 桌面源码版本为 **2.7.0**。在 Windows 接收兼容话机的网络录音，接通后自动录制、挂断后保存，并提供内建播放、健康检查与故障建议。
+2.7.0 加入[自动更新](docs/自動更新與發布.md)：后台定时检查、独立更新气泡与托盘箭头标识；由用户下载并在空闲时确认重启安装。首次需手动安装具备更新能力的版本，正式文件以 [GitHub Releases](https://github.com/ChenRanReal/PhoneRecord/releases) 为准。
 2.6.0 增加历史通话重命名：在录音资料选择记录，点击「重命名」或按 F2，自定义名称可搜索并在重开后保留。留空保存可还原原名，原始号码、时间、联系人及录音文件保留。
 2.5.0 增加可自行关闭的开机启动：设置页勾选或取消立即生效，默认关闭；开启后在登录时于托盘后台运行。移动 exe 后请关闭并重新开启以更新路径。
 2.4.1 加入话机设置脚本：先预览，确认后设置网络录音及两条回调，回读验证并保留加密备份。保留原创图标与三语界面。
 
-[下载 Windows 程序](https://github.com/ChenRanReal/PhoneRecord/raw/refs/heads/main/cpp/PhoneRecord.exe) · [图标与资产](cpp/assets/README.md)
+[Windows 正式版本（Releases）](https://github.com/ChenRanReal/PhoneRecord/releases) · [旧版单文件下载](https://github.com/ChenRanReal/PhoneRecord/raw/refs/heads/main/cpp/PhoneRecord.exe) · [图标与资产](cpp/assets/README.md)
 
 **第一次使用请从 [快速上手](docs/快速上手.md) 开始**，依次完成电脑设置、电话设置、适配检查与双向试听。[English quick start](docs/QuickStart.en.md) is also available.
 

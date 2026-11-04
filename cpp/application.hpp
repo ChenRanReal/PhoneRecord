@@ -48,8 +48,10 @@ public:
 
     /// Queue a bounded operation; Stop cancels in-flight Start waits immediately.
     bool enqueue(const string& operation, const char* origin = "manual") {
+        std::lock_guard<std::mutex> admission(g_updateAdmission);
         std::lock_guard<std::mutex> guard(mutex_);
-        if (!running_ || g_stopping) return false;
+        if (!running_ || g_stopping || g_updateInstalling) return false;
+        if (operation == "start" && g_updateStartupPending) return false;
         if ((operation == "phone" || operation == "login" || operation == "compatibility" || operation == "start") && !g_cfg.errors().empty()) {
             if (operation == "compatibility") { CompatibilityReport report; report.verdict = "settings"; report.checkedAt = diagnosticTime(); report.items.push_back({"local", "fail", "local_fix"}); publishCompatibility(report); }
             LOGW("COMMAND_REQUIRES_VALID_CONFIG operation=%s", operation.c_str()); return false;
@@ -102,7 +104,11 @@ private:
                     operation = "health";
                 }
             }
-            diagnosticUpdate([](DiagnosticSnapshot& state) { state.busy = true; });
+            {
+                std::lock_guard<std::mutex> admission(g_updateAdmission);
+                if (g_updateInstalling) continue;
+                diagnosticUpdate([](DiagnosticSnapshot& state) { state.busy = true; });
+            }
             LOGI("OPERATION_BEGIN operation=%s", operation.c_str());
             if (operation == "local") runLocalChecks();
             else if (operation == "login") g_phone.login();
@@ -158,6 +164,14 @@ private:
 /// Single coordinator used by the GUI and acknowledged Action URL callbacks.
 static CommandCoordinator g_commands;
 
+/// Reserve a received established-call event until its response callback has been released.
+struct PendingCallEvent {
+    /// Construct while holding g_updateAdmission, before an installation can claim idle state.
+    PendingCallEvent() { ++g_pendingCallEvents; }
+    /// Release even when sending the HTTP acknowledgement fails and its callback is discarded.
+    ~PendingCallEvent() { --g_pendingCallEvents; }
+};
+
 /// Accept existing phone event URLs while refusing unrelated paths and unknown event names.
 static void hookHandler(HttpRequest& request, HttpResponse& response) {
     response.contentType = "text/plain; charset=utf-8";
@@ -179,10 +193,16 @@ static void hookHandler(HttpRequest& request, HttpResponse& response) {
     const bool start = event == "est" || event == "established";
     const bool stop = event == "end" || event == "terminated";
     if (!start && !stop) { response.status = 400; response.body = "unknown event"; LOGW("EVENT_UNKNOWN_TYPE"); return; }
+    std::shared_ptr<PendingCallEvent> admission;
+    if (start) {
+        std::lock_guard<std::mutex> guard(g_updateAdmission);
+        if (g_updateInstalling || g_updateStartupPending) { response.status = 503; response.body = "update in progress"; return; }
+        admission = std::make_shared<PendingCallEvent>();
+    }
     diagnosticUpdate([](DiagnosticSnapshot& state) { ++state.events; });
     LOGI("EVENT_RECEIVED type=%s peer=%s", start ? "established" : "terminated", request.sourceIp.c_str());
     response.body = "OK";
-    response.afterSend = [start]() { g_commands.enqueue(start ? "start" : "stop", "phone_event"); };
+    response.afterSend = [start, admission]() { g_commands.enqueue(start ? "start" : "stop", "phone_event"); };
 }
 
 /// Analyse an existing PCM WAV on explicit request, without altering its audio samples.

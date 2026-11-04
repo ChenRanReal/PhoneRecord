@@ -1,4 +1,4 @@
-# PhoneRecord 2.6.0 — C++ 電話錄音工具
+# PhoneRecord 2.7.0 — C++ 電話錄音工具
 
 原生 Windows 桌面程式，直接建置為 `PhoneRecord.exe`，不需要 Python 或額外的 C++ Runtime 安裝。
 2.3.1 加入[原創電話錄音圖示](assets/README.md)，包含九種尺寸並內嵌於執行檔；視窗、工作列與系統托盤共用。
@@ -61,13 +61,17 @@ exe 可單獨首次啟動，沒有配置或必要欄位未填時直接開啟設�
 保存完整包含 `phone_port`，不會把運行中的 socket 配置一半改成新值。舊 `ui_port` 保留讀寫相容性；新版使用原生介面，不需要 8090 網頁管理埠。
 話機的公司 IT Action URL 不由本工具改寫。背景不週期性拉取 calllog，以免擠占錄音指令配額。
 
+## 自動更新
+
+2.7.0 加入獨立更新頁、每 1／6／12／24 小時背景檢查、更新氣泡與持續托盤箭頭。由使用者確認安裝，通話／錄音期間不可更新；簽章與摘要驗證後才替換程式。首次安裝、簽章金鑰、Actions 與驗收見 [自動更新與發布](../docs/自動更新與發布.md)。
+
 ## 建置
 
 ```powershell
 cmd /c .\cpp\build.bat
 ```
 
-唯一入口為 `build.bat`：MSVC 14.51.36231、Windows SDK 10.0.26100.0、C++17、x86、靜態 CRT。
+入口為 `build.bat`：優先使用既有 MSVC 環境或 vswhere 探測 x86 工具，保留本機 MSVC 14.51.36231／SDK 10.0.26100.0 備援；C++17、x86、靜態 CRT。
 包含 exe 版本資源、DPI／Common Controls manifest、GS、ASLR 與 DEP 設定。
 API 編譯目標保留 Windows 7，但目前只驗證本機 Windows 環境；未宣稱舊系統已驗收。
 
@@ -79,6 +83,10 @@ API 編譯目標保留 Windows 7，但目前只驗證本機 Windows 環境；未
 | `phone_client.hpp` | Fanvil challenge、快取驗證、1.1 秒安靜間隔、單次 Start 與唯讀設定檢查 |
 | `compatibility.hpp` | 有界 HTML 欄位解析、地址不外露的檢查結果、檢查後新通話的證據邊界 |
 | `event_server.hpp` | 有界 HTTP 事件服務，完整回應後才排程動作 |
+| `product_version.h` | C++ 與 Windows 版本資源共用的版本權威 |
+| `update_protocol.hpp`／`update_public_key.hpp` | 版本比較、簽章、公鑰、摘要與偏好格式 |
+| `update_service.hpp` | 獨立更新排程、GitHub HTTPS 查詢、下載與快取 |
+| `update_installer.hpp` | 輔助程序、父程序握手、替換與啟動失敗復原 |
 | `application.hpp` | 指令序列、本機檢查、WAV 分析、配置保存與診斷報告 |
 | `audio_player.hpp` | 內建非同步 WAV 播放，獨立擁有 waveOut 裝置與檔案 |
 | `json_text.hpp` | JSON 字串跳脫及 Unicode／surrogate pair 解析 |

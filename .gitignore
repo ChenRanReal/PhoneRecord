@@ -71,3 +71,14 @@ venv/
 .idea/
 .workbuddy/
 .acl-recovery/
+
+# Signed release metadata and updater-owned runtime files are never source inputs.
+/cpp/update-manifest.txt
+/cpp/update-manifest.sig
+*.updates
+*.update-cache
+*.update-result
+*.update-cleanup
+*.update-new
+*.update-backup
+*.update-probe

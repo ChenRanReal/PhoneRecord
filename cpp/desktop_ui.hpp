@@ -25,6 +25,10 @@ static void enableDesktopDpi() {
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     int count = 0;
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (arguments && count > 1 && wcscmp(arguments[1], L"--apply-update") == 0) {
+        const int result = updateApply(count, arguments); LocalFree(arguments); return result;
+    }
+    HANDLE updateAck = NULL;
     wchar_t executable[32768]{}; GetModuleFileNameW(NULL, executable, static_cast<DWORD>(std::size(executable)));
     wstring folder(executable); folder = folder.substr(0, folder.find_last_of(L"\\/"));
     wstring config = folder + L"\\config.ini", exportPath, analysePath, setupReport, setupRestore, setupScript;
@@ -37,6 +41,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         else if (argument == L"--offline") g_offline = true;
         else if (argument == L"--headless") headless = true;
         else if (argument == L"--startup") startup = true;
+        else if (argument == L"--update-ack" && index + 1 < count) {
+            wchar_t* end = NULL; const uint64_t value = _wcstoui64(arguments[++index], &end, 10);
+            DWORD flags = 0; HANDLE handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(value));
+            if (value && end && !*end && GetHandleInformation(handle, &flags)) updateAck = handle;
+        }
         else if (argument == L"--phone-setup-preview") { setupAction = "preview"; headless = true; }
         else if (argument == L"--phone-setup-apply") { setupAction = "apply"; headless = true; }
         else if (argument == L"--phone-setup-restore" && index + 1 < count) { setupAction = "restore"; setupRestore = absoluteStartupPath(arguments[++index]); headless = true; }
@@ -54,6 +63,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         }
     }
     if (arguments) LocalFree(arguments);
+    if (updateAck) { std::lock_guard<std::mutex> guard(g_updateAdmission); g_updateStartupPending = true; }
     g_configPath = absoluteStartupPath(config);
     folder = g_configPath.substr(0, g_configPath.find_last_of(L"\\/"));
     if (!SetCurrentDirectoryW(folder.c_str())) return 2;
@@ -144,6 +154,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
             if (!exists || !invalid.empty()) SendMessageW(window, WM_COMMAND, 103, 0);
             const bool background = startup && exists && invalid.empty() && view.hasTrayIcon();
             ShowWindow(window, background ? SW_HIDE : startup ? SW_SHOWNOACTIVATE : show); UpdateWindow(window);
+            if (updateAck) {
+                const bool acknowledged = SetEvent(updateAck) != FALSE; CloseHandle(updateAck); updateAck = NULL;
+                if (acknowledged) { std::lock_guard<std::mutex> guard(g_updateAdmission); g_updateStartupPending = false; }
+            }
             if (startup) LOGI("AUTOSTART_WINDOW hidden=%d tray_available=%d config_valid=%d", background, view.hasTrayIcon(), exists && invalid.empty());
             MSG message{};
             while (GetMessageW(&message, NULL, 0, 0) > 0) {

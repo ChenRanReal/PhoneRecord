@@ -488,6 +488,8 @@ private:
 
     /// Allocate one exclusive UDP socket per id, reusing duplicate Start requests safely.
     bool startSession(const string& id, const std::map<string, string>& params, int& portOut, const string& peer) {
+        std::lock_guard<std::mutex> admission(g_updateAdmission);
+        if (g_updateInstalling || g_updateStartupPending) { LOGW("CONTROL_START_UPDATE_IN_PROGRESS"); return false; }
         g_lastCallActivity = GetTickCount64();
         std::lock_guard<std::mutex> guard(mutex_);
         const auto existing = sessions_.find(id);

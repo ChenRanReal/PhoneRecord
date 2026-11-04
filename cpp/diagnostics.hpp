@@ -4,7 +4,8 @@
 #include <iomanip>
 
 /// Product version included in the window, logs and diagnostic reports.
-static const char* const kProductVersion = "2.6.0";
+#include "product_version.h"
+static const char* const kProductVersion = PHONERECORD_VERSION;
 
 /// Format a local wall-clock timestamp with millisecond precision.
 static std::string diagnosticTime() {
