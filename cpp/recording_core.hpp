@@ -109,12 +109,32 @@ private:
             } else if (source.sin_addr.s_addr != peer_.sin_addr.s_addr || source.sin_port != peer_.sin_port) {
                 ++invalid_; continue;
             }
+            // Observe source switches even if the existing sequence filter rejects the packet.
+            if (ssrcSeen_ && rtp.ssrc != observedSsrc_) ++ssrcChanges_;
+            ssrcSeen_ = true; observedSsrc_ = rtp.ssrc;
+            int sequenceDelta = 0;
             if (sequenceSeen_) {
                 const int delta = static_cast<int16_t>(static_cast<uint16_t>(rtp.sequence - lastSequence_));
+                sequenceDelta = delta;
                 if (delta == 0) { ++duplicates_; continue; }
                 if (delta < 0) { ++outOfOrder_; continue; }
                 if (delta > 1) lost_ += delta - 1;
             }
+            // Compare only consecutive accepted packets of the same source. A skipped
+            // sequence already has separate loss evidence; do not count it as a source gap.
+            if (sequenceSeen_ && sequenceDelta == 1 && rtp.ssrc == lastSsrc_) {
+                const uint32_t step = rtp.timestamp - lastTimestamp_;
+                if (step != lastPayloadSize_) {
+                    ++timestampDiscontinuities_;
+                    if (step < 0x80000000U && step > lastPayloadSize_) timestampGapSamples_ += step - lastPayloadSize_;
+                    else ++timestampOverlapOrReset_;
+                    if (timestampDiscontinuities_ <= 8)
+                        LOGW("RTP_CLOCK_DISCONTINUITY session=%s packet=%llu step_samples=%lu expected_samples=%lu arrival_ms=%llu",
+                             tag_.c_str(), packetCount_.load() + 1, static_cast<unsigned long>(step),
+                             static_cast<unsigned long>(lastPayloadSize_), now - started);
+                }
+            }
+            lastTimestamp_ = rtp.timestamp; lastSsrc_ = rtp.ssrc; lastPayloadSize_ = static_cast<uint32_t>(rtp.payloadSize);
             sequenceSeen_ = true;
             lastSequence_ = rtp.sequence;
             if (packetCount_) maxGapMs_ = std::max(maxGapMs_, now - lastPacket);
@@ -123,6 +143,9 @@ private:
             for (int index = 0; index < rtp.payloadSize; ++index)
                 pcm[index] = ulaw ? g_ulaw[buffer[rtp.payloadOffset + index]] : g_alaw[buffer[rtp.payloadOffset + index]];
             ++packetCount_;
+            if (packetCount_ == 1 || (packetCount_ <= 100 && packetCount_ % 5 == 0))
+                LOGD("RTP_TIMING session=%s packet=%llu arrival_ms=%llu timestamp=%lu payload_samples=%d",
+                     tag_.c_str(), packetCount_.load(), now - started, static_cast<unsigned long>(rtp.timestamp), rtp.payloadSize);
             diagnosticUpdate([&](DiagnosticSnapshot& state) {
                 ++state.packets;
                 if (state.sessionTag == tag_) { ++state.attemptPackets; state.attemptRtp = true; state.stage = RecordingStage::Media; state.code = "RTP_RECEIVED"; }
@@ -185,6 +208,10 @@ private:
                      << ",\"packets\":" << packetCount_ << ",\"lost\":" << lost_
                      << ",\"duplicates\":" << duplicates_ << ",\"out_of_order\":" << outOfOrder_
                      << ",\"invalid\":" << invalid_ << ",\"max_gap_ms\":" << maxGapMs_
+                     << ",\"timestamp_discontinuities\":" << timestampDiscontinuities_
+                     << ",\"timestamp_gap_samples\":" << timestampGapSamples_
+                     << ",\"timestamp_overlap_or_reset\":" << timestampOverlapOrReset_
+                     << ",\"ssrc_changes\":" << ssrcChanges_
                      << ",\"reason\":\"" << reason << "\",\"display_name\":" << jsonQuoted(name_) << "}\n";
             metadata.flush();
             if (!metadata) LOGE("QUALITY_SAVE_FAILED session=%s", tag_.c_str());
@@ -203,6 +230,8 @@ private:
             LOGW("SESSION_NO_AUDIO session=%s reason=%s invalid=%llu", tag_.c_str(), reason.c_str(), invalid_);
         }
         cleanup();
+        LOGI("RTP_CLOCK_SUMMARY session=%s discontinuities=%llu gap_samples=%llu overlap_or_reset=%llu ssrc_changes=%llu",
+             tag_.c_str(), timestampDiscontinuities_, timestampGapSamples_, timestampOverlapOrReset_, ssrcChanges_);
         finished_ = true;
     }
 
@@ -253,6 +282,13 @@ private:
     int lastSequence_ = 0;
     /// Media diagnostics, modified only by the media worker.
     uint64_t lost_ = 0, duplicates_ = 0, outOfOrder_ = 0, invalid_ = 0, maxGapMs_ = 0;
+    /// Last accepted media header; unsigned subtraction handles timestamp rollover.
+    uint32_t lastTimestamp_ = 0, lastSsrc_ = 0, lastPayloadSize_ = 0;
+    /// Observed source switches include packets rejected by the existing sequence filter.
+    bool ssrcSeen_ = false;
+    uint32_t observedSsrc_ = 0;
+    /// Clock evidence only; this change never inserts, drops or rewrites PCM samples.
+    uint64_t timestampDiscontinuities_ = 0, timestampGapSamples_ = 0, timestampOverlapOrReset_ = 0, ssrcChanges_ = 0;
     /// Wall clock at session allocation for the existing ledger.
     string startedAt_ = nowStamp();
     /// Protect the externally requested stop reason.

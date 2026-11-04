@@ -56,6 +56,7 @@ public:
             if (operation == "compatibility") { CompatibilityReport report; report.verdict = "settings"; report.checkedAt = diagnosticTime(); report.items.push_back({"local", "fail", "local_fix"}); publishCompatibility(report); }
             LOGW("COMMAND_REQUIRES_VALID_CONFIG operation=%s", operation.c_str()); return false;
         }
+        if (operation == "compatibility" && string(origin) == "startup") automaticCompatibilityPending_ = true;
         if (operation == "start") {
             if (callActive_ || g_sessionCount > 0) { LOGW("START_DUPLICATE_IGNORED"); return false; }
             g_lastCallActivity = GetTickCount64();
@@ -99,9 +100,13 @@ private:
                     const int interval = g_healthIntervalSec.load();
                     const ULONGLONG now = GetTickCount64();
                     if (interval != scheduledInterval_) { scheduledInterval_ = interval; nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000; }
-                    if (interval <= 0 || now < nextHealth_ || callActive_ || g_sessionCount > 0 || now - g_lastCallActivity.load() < 20000) continue;
-                    nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000;
-                    operation = "health";
+                    if (callActive_ || g_sessionCount > 0 || now - g_lastCallActivity.load() < 20000) continue;
+                    if (automaticCompatibilityPending_) operation = "compatibility";
+                    else {
+                        if (interval <= 0 || now < nextHealth_) continue;
+                        nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000;
+                        operation = "health";
+                    }
                 }
             }
             {
@@ -116,6 +121,12 @@ private:
                 runLocalChecks();
                 if (!g_offline && !diagnosticSnapshot().authenticated && !diagnosticSnapshot().callActive && g_sessionCount == 0) g_phone.login();
                 g_phone.checkCompatibility();
+                // A startup inspection interrupted by a call gets one new opportunity
+                // after the existing idle quiet period, independently of health polling.
+                if (compatibilitySnapshot().verdict != "deferred") {
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    automaticCompatibilityPending_ = false;
+                }
             }
             else if (operation == "phone" || operation == "health") {
                 if (operation == "health") runLocalChecks();
@@ -156,6 +167,8 @@ private:
     bool running_ = false;
     /// Deduplicate established-call events, protected by mutex_.
     bool callActive_ = false;
+    /// Startup inspection awaiting an idle retry after a call; guarded by mutex_.
+    bool automaticCompatibilityPending_ = false;
     /// Monotonic idle-check schedule, owned exclusively by the operation thread.
     ULONGLONG nextHealth_ = 0;
     int scheduledInterval_ = -1;

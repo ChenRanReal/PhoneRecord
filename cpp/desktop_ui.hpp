@@ -120,8 +120,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         bool eventReady = g_cfg.hookPort == 0;
         if (g_cfg.hookPort > 0) { events = std::make_unique<HttpServer>(g_cfg.hookPort, hookHandler); eventReady = events->start(); }
         if (g_cfg.hookPort == 0) { LOGW("EXTERNAL_TRIGGER_MODE event_listener_disabled=true"); diagnosticUpdate([](DiagnosticSnapshot& state) { if (state.controlListening) state.code = "EXTERNAL_TRIGGER_MODE"; }); }
-        g_commands.enqueue("local");
-        if (controlReady && eventReady && !g_offline && g_cfg.hookPort > 0) g_commands.enqueue("login");
+        if (controlReady && eventReady && !g_offline && g_cfg.hookPort > 0)
+            g_commands.enqueue("compatibility", "startup");
+        else g_commands.enqueue("local");
         if (g_offline && controlReady && eventReady) diagnosticStage(RecordingStage::Waiting, "OFFLINE_MODE");
     } else {
         diagnosticStage(RecordingStage::Failed, exists ? "CONFIG_INVALID" : "CONFIG_MISSING", invalid.empty() ? "" : invalid.front());
