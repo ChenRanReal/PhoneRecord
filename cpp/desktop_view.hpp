@@ -45,7 +45,7 @@ static void desktopRecordingStopped() {
 class DesktopView {
 public:
     /// Adopt a system-DPI scale; native resources are created in WM_CREATE.
-    explicit DesktopView(int dpi) : dpi_(dpi) {}
+    explicit DesktopView(int dpi, HANDLE stopSignal = NULL) : dpi_(dpi), stopSignal_(stopSignal) {}
     /// Release every owned GDI object after the native window has been destroyed.
     ~DesktopView() { destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
 
@@ -160,7 +160,8 @@ private:
         recordingSearch_ = edit("", 210, 1);
         SendMessageW(recordingSearch_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("search.recordings")));
         button("button.play", 211, 1); button("button.reveal", 212, 1); button("button.analyse", 213, 1); button("button.refresh", 214, 1); button("button.open_folder", 215, 1);
-        recordings_ = list(610, 1, {{"column.time", 150}, {"column.direction", 60}, {"column.contact", 220}, {"column.duration", 65}, {"column.quality", 155}, {"column.source", 140}, {"column.size", 80}});
+        button("button.rename", 221, 1); EnableWindow(GetDlgItem(window_, 221), FALSE);
+        recordings_ = list(610, 1, {{"column.time", 150}, {"column.title", 160}, {"column.direction", 58}, {"column.contact", 170}, {"column.duration", 64}, {"column.quality", 125}, {"column.source", 120}, {"column.size", 76}});
         playerSeek_ = control(TRACKBAR_CLASSW, L"", WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 218, 1);
         SendMessageW(playerSeek_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 1000));
         button("player.pause", 216, 1); button("player.stop", 217, 1);
@@ -251,9 +252,12 @@ private:
         }
         move(helpTopic_, left, 110, available - 354, 240); move(GetDlgItem(window_, 804), w - 366, 110, 174, 32); move(GetDlgItem(window_, 805), w - 180, 110, 156, 32); move(helpText_, left, 158, available, h - 200);
         move(recent_, left, 534, available, h - 576);
-        move(recordingSearch_, left, 110, std::max(180, available - 460), 32);
-        for (const auto& child : controls_) if (child.id >= 211 && child.id <= 215) move(child.window, w - 454 + (child.id - 211) * 86, 110, 80, 32);
-        move(recordings_, left, 158, available, h - 340);
+        move(recordingSearch_, left, 110, available, 32);
+        const int recordingActions[] = {211, 221, 212, 213, 214, 215};
+        const int recordingWidths[] = {88, 110, 110, 116, 98, 154};
+        int actionLeft = left;
+        for (size_t index = 0; index < std::size(recordingActions); ++index) { move(GetDlgItem(window_, recordingActions[index]), actionLeft, 152, recordingWidths[index], 32); actionLeft += recordingWidths[index] + 10; }
+        move(recordings_, left, 198, available, h - 380);
         move(playerCaption_, left + 16, h - 164, available - 32, 24);
         move(playerSeek_, left + 10, h - 128, available - 178, 28);
         move(playerTime_, w - 178, h - 128, 136, 26);
@@ -289,7 +293,11 @@ private:
         move(GetDlgItem(window_, 422), left + 148, h - 74, 148, 36); move(GetDlgItem(window_, 423), left + 308, h - 74, 174, 36);
         move(GetDlgItem(window_, 424), left + 494, h - 74, std::min(226, available - 494), 36);
         move(intervalLabel_, left + column + 10, 546, column - 10, 22); move(intervalChoice_, left + column + 10, 571, column - 10, 200);
-        if (recordings_) ListView_SetColumnWidth(recordings_, 2, px(std::max(170, available - 750)));
+        if (recordings_) {
+            const int titles = std::max(320, available - 593);
+            ListView_SetColumnWidth(recordings_, 1, px(titles / 2));
+            ListView_SetColumnWidth(recordings_, 3, px(titles - titles / 2));
+        }
         if (diagnostics_) ListView_SetColumnWidth(diagnostics_, 3, px(std::max(200, available - 315)));
         if (recent_) ListView_SetColumnWidth(recent_, 2, px(std::max(200, available - 265)));
         InvalidateRect(window_, NULL, FALSE);
@@ -373,6 +381,7 @@ private:
         } else if (topic == 5) body = compatibilityText();
         else if (topic == 6) body = uiText("help.setup.body");
         else body = uiText(topic == 3 ? "help.devices.body" : topic == 4 ? "help.diagnostics.body" : "help.start.body");
+        if (topic == 0) body += L"\r\n\r\n" + wstring(uiText("rename.help"));
         SetWindowTextW(helpText_, body.c_str());
         const auto report = compatibilitySnapshot(); lastCompatRevision_ = report.revision;
         lastCompatRuntime_ = compatibilityRuntimeVerified(report, diagnosticSnapshot(), g_sessionCount.load());
@@ -683,16 +692,85 @@ private:
         const string file = selected >= 0 && selected < static_cast<int>(visibleCalls_.size()) ? visibleCalls_[selected].file : "";
         if (scan) calls_ = scanRecordings();
         const string search = toLower(text(recordingSearch_)); visibleCalls_.clear();
-        for (const auto& item : calls_) if (search.empty() || toLower(item.name + " " + item.remote + " " + item.date + " " + item.file).find(search) != string::npos) visibleCalls_.push_back(item);
+        for (const auto& item : calls_) if (search.empty() || toLower(item.title + " " + item.name + " " + item.remote + " " + item.date + " " + item.file).find(search) != string::npos) visibleCalls_.push_back(item);
         SendMessageW(recordings_, WM_SETREDRAW, FALSE, 0); ListView_DeleteAllItems(recordings_);
         for (size_t index = 0; index < visibleCalls_.size(); ++index) {
             const auto& item = visibleCalls_[index];
             const string quality = "quality." + item.quality;
             const wchar_t* source = item.source == "configured_phone" ? uiText("source.phone") : item.source == "test_or_other_peer" ? uiText("source.test") : uiText("source.unknown");
-            row(recordings_, static_cast<int>(index), {utf8ToWide(item.date + " " + item.clock), uiText(item.direction == "in" ? "direction.in" : "direction.out"), utf8ToWide(item.name.empty() ? item.remote : item.name + "  " + item.remote), utf8ToWide(durationText(item)), uiText(quality.c_str()), source, std::to_wstring(item.size / 1024) + L" KiB"});
+            row(recordings_, static_cast<int>(index), {utf8ToWide(item.date + " " + item.clock), utf8ToWide(item.title.empty() ? item.name.empty() ? item.remote : item.name : item.title), uiText(item.direction == "in" ? "direction.in" : "direction.out"), utf8ToWide(item.name.empty() ? item.remote : item.name + "  " + item.remote), utf8ToWide(durationText(item)), uiText(quality.c_str()), source, std::to_wstring(item.size / 1024) + L" KiB"});
             if (item.file == file) ListView_SetItemState(recordings_, static_cast<int>(index), LVIS_SELECTED, LVIS_SELECTED);
         }
         SendMessageW(recordings_, WM_SETREDRAW, TRUE, 0); InvalidateRect(recordings_, NULL, TRUE);
+        EnableWindow(GetDlgItem(window_, 221), ListView_GetNextItem(recordings_, -1, LVNI_SELECTED) >= 0);
+    }
+
+    /// Carry the selected recording identity and metadata generation through one modal edit.
+    struct RenameRequest {
+        DesktopView* owner = NULL;
+        wstring path, identity;
+        string fileId;
+        RecordingTitle previous;
+    };
+
+    /// Localize the native title editor and keep failed saves open for correction or cancellation.
+    static INT_PTR CALLBACK renameProcedure(HWND dialog, UINT message, WPARAM wparam, LPARAM lparam) {
+        auto* request = reinterpret_cast<RenameRequest*>(GetWindowLongPtrW(dialog, DWLP_USER));
+        if (message == WM_INITDIALOG) {
+            request = reinterpret_cast<RenameRequest*>(lparam); SetWindowLongPtrW(dialog, DWLP_USER, lparam);
+            request->owner->renameDialog_ = dialog;
+            SetWindowTextW(dialog, uiText("rename.dialog"));
+            SetDlgItemTextW(dialog, IDC_RENAME_INFO, request->identity.c_str());
+            SetDlgItemTextW(dialog, IDC_RENAME_LABEL, uiText("column.title"));
+            SetDlgItemTextW(dialog, IDC_RENAME_HINT, uiText("rename.hint"));
+            SetDlgItemTextW(dialog, IDC_RENAME_RESET, uiText("rename.reset"));
+            SetDlgItemTextW(dialog, IDOK, uiText("rename.save")); SetDlgItemTextW(dialog, IDCANCEL, uiText("rename.cancel"));
+            SendDlgItemMessageW(dialog, IDC_RENAME_TITLE, EM_SETLIMITTEXT, 240, 0);
+            SetDlgItemTextW(dialog, IDC_RENAME_TITLE, request->previous.value.c_str());
+            SendDlgItemMessageW(dialog, IDC_RENAME_TITLE, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("rename.placeholder")));
+            SetFocus(GetDlgItem(dialog, IDC_RENAME_TITLE)); return FALSE;
+        }
+        if (message == WM_COMMAND && request) {
+            if (LOWORD(wparam) == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
+            if (LOWORD(wparam) == IDC_RENAME_RESET) { SetDlgItemTextW(dialog, IDC_RENAME_TITLE, L""); SetFocus(GetDlgItem(dialog, IDC_RENAME_TITLE)); return TRUE; }
+            if (LOWORD(wparam) == IDOK) {
+                const int count = GetWindowTextLengthW(GetDlgItem(dialog, IDC_RENAME_TITLE));
+                wstring value(static_cast<size_t>(count) + 1, L'\0'); GetDlgItemTextW(dialog, IDC_RENAME_TITLE, &value[0], count + 1); value.resize(count);
+                DWORD error = 0; const TitleResult result = saveRecordingTitle(request->path, value, request->previous, error);
+                if (result == TitleResult::Saved) { wstring normalized; normalizeRecordingTitle(value, normalized); LOGI("CALL_TITLE_SAVED file_id=%s reset=%d", request->fileId.c_str(), normalized.empty()); EndDialog(dialog, IDOK); }
+                else {
+                    const char* key = result == TitleResult::Invalid ? "rename.invalid" : result == TitleResult::Busy ? "rename.busy" : result == TitleResult::Changed ? "rename.changed" : result == TitleResult::Metadata ? "rename.metadata" : "rename.failed";
+                    LOGW("CALL_TITLE_SAVE_FAILED file_id=%s reason=%s win32=%lu", request->fileId.c_str(), key, error);
+                    wstring explanation = uiText(key); if (error) explanation += L"\r\nWin32: " + std::to_wstring(error);
+                    MessageBoxW(dialog, explanation.c_str(), uiText("rename.dialog"), MB_OK | MB_ICONWARNING);
+                }
+                return TRUE;
+            }
+        }
+        if (message == WM_DESTROY && request) request->owner->renameDialog_ = NULL;
+        if (message == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
+        return FALSE;
+    }
+
+    /// Edit a display title while retaining the WAV, ledger, contact and quality metadata.
+    void renameRecording() {
+        const int selected = ListView_GetNextItem(recordings_, -1, LVNI_SELECTED);
+        if (selected < 0 || selected >= static_cast<int>(visibleCalls_.size())) return;
+        const auto item = visibleCalls_[selected];
+        RenameRequest request;
+        request.owner = this;
+        request.fileId = sessionFingerprint(item.file);
+        request.path = utf8ToWide(g_cfg.recordDir + "\\" + item.file);
+        request.identity = utf8ToWide(item.date + " " + item.clock) + L"  ·  " + uiText(item.direction == "in" ? "direction.in" : "direction.out") + L"\r\n" + utf8ToWide(item.remote + "  " + item.name);
+        request.previous = readRecordingTitle(request.path);
+        if (request.previous.error) { LOGW("CALL_TITLE_READ_FAILED win32=%lu", request.previous.error); MessageBoxW(window_, uiText("rename.metadata"), uiText("rename.dialog"), MB_OK | MB_ICONWARNING); return; }
+        if (DialogBoxParamW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDD_RENAME_CALL), window_, renameProcedure, reinterpret_cast<LPARAM>(&request)) == IDOK) {
+            refreshRecordings(true);
+            if (player_.path() == wideToUtf8(request.path)) {
+                const auto title = readRecordingTitle(request.path);
+                SetWindowTextW(playerCaption_, title.value.empty() ? utf8ToWide(item.file).c_str() : title.value.c_str());
+            }
+        }
     }
 
     /// Return the selected stable file path and reject incomplete active recordings.
@@ -815,6 +893,7 @@ private:
         if (id == 216) { if (player_.playing()) player_.pause(); else player_.play(); updatePlayer(); return; }
         if (id == 217) { player_.stop(); updatePlayer(); return; }
         if (id == 214) { refreshRecordings(true); return; }
+        if (id == 221) { renameRecording(); return; }
         if (id == 215) { openFolder(true); return; }
         if (id == 312) { copyReport(); return; }
         if (id == 313) { exportReport(); return; }
@@ -835,7 +914,8 @@ private:
             if (check == INVALID_HANDLE_VALUE) { MessageBoxW(window_, uiText("message.busy_file"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; } CloseHandle(check);
             if (id == 211) {
                 if ((path != player_.path() && !player_.open(path, window_)) || !player_.play()) { MessageBoxW(window_, uiText("message.player_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return; }
-                const size_t split = path.find_last_of('\\'); SetWindowTextW(playerCaption_, utf8ToWide(path.substr(split + 1)).c_str()); updatePlayer();
+                const size_t split = path.find_last_of('\\'); const auto title = readRecordingTitle(utf8ToWide(path));
+                SetWindowTextW(playerCaption_, title.value.empty() ? utf8ToWide(path.substr(split + 1)).c_str() : title.value.c_str()); updatePlayer();
             }
             if (id == 213) {
                 if (analysisWorker_.joinable()) analysisWorker_.join();
@@ -947,6 +1027,8 @@ private:
             return 0;
         case WM_NOTIFY: {
             auto* notice = reinterpret_cast<NMHDR*>(lparam);
+            if (notice->idFrom == 610 && notice->code == LVN_ITEMCHANGED) EnableWindow(GetDlgItem(window_, 221), ListView_GetNextItem(recordings_, -1, LVNI_SELECTED) >= 0);
+            if (notice->idFrom == 610 && notice->code == LVN_KEYDOWN && reinterpret_cast<NMLVKEYDOWN*>(lparam)->wVKey == VK_F2) { PostMessageW(window_, WM_COMMAND, 221, 0); return 0; }
             if (notice->idFrom == 610 && notice->code == NM_DBLCLK) command(211);
             if (notice->idFrom == 620 && notice->code == LVN_ITEMCHANGED) {
                 const int selected = ListView_GetNextItem(diagnostics_, -1, LVNI_SELECTED);
@@ -968,6 +1050,12 @@ private:
             }
             break;
         case WM_TIMER: {
+            // Modal editors run their own message loop; keep the documented stop signal responsive.
+            if (stopSignal_ && WaitForSingleObject(stopSignal_, 0) == WAIT_OBJECT_0) {
+                ResetEvent(stopSignal_);
+                if (renameDialog_) EndDialog(renameDialog_, IDCANCEL);
+                PostMessageW(window_, WM_COMMAND, 902, 0); return 0;
+            }
             const auto state = diagnosticSnapshot();
             const int sessions = static_cast<int>(g_sessionCount.load()), recordings = g_activeRecordings.load();
             if (state.changedAt != lastChanged_ || sessions != lastSessions_ || recordings != lastActive_) { lastChanged_ = state.changedAt; lastSessions_ = sessions; lastActive_ = recordings; InvalidateRect(window_, NULL, FALSE); EnableWindow(GetDlgItem(window_, 503), !state.callActive && sessions == 0 && !state.busy && !g_offline); }
@@ -1020,6 +1108,10 @@ private:
     HWND recordings_ = NULL, diagnostics_ = NULL, recent_ = NULL;
     /// Search, filter and diagnostic detail controls.
     HWND recordingSearch_ = NULL, logSearch_ = NULL, logFilter_ = NULL, detail_ = NULL;
+    /// Non-owned process stop event, valid until this view has been destroyed.
+    HANDLE stopSignal_ = NULL;
+    /// Current owned title editor, canceled before a requested application shutdown.
+    HWND renameDialog_ = NULL;
     /// Owned internal playback device and cursor controls.
     WavPlayer player_;
     HWND playerSeek_ = NULL, playerCaption_ = NULL, playerTime_ = NULL, followRecent_ = NULL;

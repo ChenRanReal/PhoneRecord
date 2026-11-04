@@ -321,6 +321,7 @@ static RecordStopFn  g_uiRecordStop  = NULL;
 
 // ===========================================================================
 #include "json_text.hpp"
+#include "recording_titles.hpp"
 
 // 号码 -> 姓名
 // ===========================================================================
@@ -556,6 +557,8 @@ struct CallItem {
     string local;
     string remote;
     string name;
+    /// User-defined title, stored separately from the original call identity.
+    string title;
     int    duration = 0;
     long long size = 0;
     /// Signal and provenance values from a completed quality sidecar.
@@ -644,6 +647,9 @@ static std::vector<CallItem> scanRecordings() {
         if (!displayName.empty()) item.name = displayName;
         if (!signal.empty()) item.quality = signal;
         if (!source.empty()) item.source = source;
+        const auto title = readRecordingTitle(utf8ToWide(g_cfg.recordDir + "\\" + item.file));
+        if (!title.error) item.title = wideToUtf8(title.value);
+        else LOGW("CALL_TITLE_READ_FAILED file_id=%s win32=%lu", sessionFingerprint(item.file).c_str(), title.error);
         items.push_back(item);
     } while (FindNextFileW(handle, &fd));
 

@@ -2,7 +2,8 @@
 
 # PhoneRecord — Call Recording Workbench
 
-The current C++ desktop version is **2.5.0**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+The current C++ desktop version is **2.6.0**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+Version 2.6.0 adds historical call titles: select a recording and choose Rename or press F2. Titles remain searchable after reopening. Save blank to restore the original title; original contacts, numbers, times and audio files are retained.
 Version 2.5.0 adds optional startup at sign-in. The Settings checkbox applies immediately and defaults to off. When enabled, the app starts in the tray. After moving the exe, turn the option off and on to update its path.
 Version 2.4.1 adds a phone setup script: preview first, then after confirmation configure network recording and the two callbacks, verify by reading the settings back, and keep an encrypted backup. The original icon and the three-language interface remain.
 
@@ -26,7 +27,7 @@ If the login check passes but a connected call is not recorded, read [話機自�
 | Page | Purpose |
 |---|---|
 | Overview (运行概览) | Automatic recording, separate local and phone health indicators, the recording pipeline, and a timeline that can follow the latest events |
-| Recordings (录音资料) | Search by name, number, or date; in-app play, pause, and drag the progress; reveal the file; signal check |
+| Recordings (录音资料) | Search by title, contact, number or date; rename or restore titles; in-app play, pause and seek; reveal the file; signal check |
 | Diagnostics (诊断中心) | Millisecond events and stable codes, item-by-item guidance, copy or export a report |
 | Settings (连接设置) | Positive-integer ports, per-field descriptions, save folder, health-check interval, close behavior, balloon notifications, and startup at sign-in |
 | Help & devices (帮助与适配) | Trilingual first-run help, generic callback templates, a read-only compatibility check, and a compatibility report that omits actual IP addresses |
@@ -54,6 +55,7 @@ Every address is filled in by the user. Changing the event port requires updatin
 - [Use and troubleshooting](docs/PhoneRecord_使用與排查.md) (Chinese)
 - [C++ build and modules](cpp/README.md) (Chinese)
 - [Phone setup script and failure diagnosis](docs/話機自動設定.md) (Chinese)
+- [Historical call titles and backup](docs/歷史通話命名.md) (Chinese)
 - [Development, verification, and the optional Python edition](docs/開發與驗證.md) (Chinese)
 - [Apache-2.0 license](LICENSE)
 

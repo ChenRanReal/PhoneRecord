@@ -127,7 +127,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
         INITCOMMONCONTROLSEX common{sizeof(common), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_BAR_CLASSES}; InitCommonControlsEx(&common);
         HDC screen = GetDC(NULL); const int dpi = GetDeviceCaps(screen, LOGPIXELSX); ReleaseDC(NULL, screen);
-        DesktopView view(dpi);
+        DesktopView view(dpi, stopSignal);
         WNDCLASSEXW type{}; type.cbSize = sizeof(type); type.lpfnWndProc = DesktopView::procedure; type.hInstance = instance;
         type.hCursor = LoadCursorW(NULL, IDC_ARROW); type.hIcon = applicationIcon(); type.hIconSm = applicationIcon(true); type.lpszClassName = L"PhoneRecord2Window";
         RegisterClassExW(&type);

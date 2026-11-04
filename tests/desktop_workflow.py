@@ -135,7 +135,7 @@ def main() -> int:
 
             USER.SendMessageW(window, 0x0111, 101, 0)
             listing = USER.GetDlgItem(window, 610)
-            contacts = [cell(app.process.pid, listing, index, 2) for index in range(3)]
+            contacts = [cell(app.process.pid, listing, index, 3) for index in range(3)]
             assert contacts == ["offline", full_name + "  offline", "测试联系人😀  90001"], contacts
             checks.append("unnamed outbound contact excludes fingerprint; CSV quotes and JSON Unicode/surrogate pairs preserved")
 
