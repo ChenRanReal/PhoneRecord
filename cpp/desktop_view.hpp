@@ -8,6 +8,7 @@
 #include "user_startup.hpp"
 #include "update_service.hpp"
 #include "update_installer.hpp"
+#include "local_ipv4.hpp"
 
 /// Load a shared embedded product icon at the system's large or small native size.
 static HICON applicationIcon(bool smallSize = false) {
@@ -45,6 +46,10 @@ static void desktopRecordingStopped() {
 
 /// Product native desktop view; every control remains on the owning GUI thread.
 class DesktopView {
+#ifdef PHONERECORD_NETWORK_TESTING
+    /// Exercise draft preservation and completion ordering without reading real adapters.
+    friend struct LocalIpv4Fixture;
+#endif
 #ifdef PHONERECORD_UPDATE_TESTING
     /// Observe the real owned tray controls in the separate native regression executable.
     friend struct UpdateTrayFixture;
@@ -53,7 +58,7 @@ public:
     /// Adopt a system-DPI scale; native resources are created in WM_CREATE.
     explicit DesktopView(int dpi, HANDLE stopSignal = NULL) : dpi_(dpi), stopSignal_(stopSignal) {}
     /// Release every owned GDI object after the native window has been destroyed.
-    ~DesktopView() { updates_.stop(); if (updateIcon_) DestroyIcon(updateIcon_); destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
+    ~DesktopView() { updates_.stop(); if (localIpWorker_.joinable()) localIpWorker_.join(); if (updateIcon_) DestroyIcon(updateIcon_); destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
 
     /// Hide a login-started window only when its tray entry can restore it.
     bool hasTrayIcon() const { return trayAdded_; }
@@ -176,6 +181,7 @@ private:
         playerTime_ = control(L"STATIC", L"0:00 / 0:00", SS_RIGHT, 220, 1);
         logSearch_ = edit("", 310, 2);
         SendMessageW(logSearch_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("search.logs")));
+        SendMessageW(fields_[4], EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("settings.local_ip_hint")));
         logFilter_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 311, 2);
         SendMessageW(logFilter_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText("filter.all")));
         SendMessageW(logFilter_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText("filter.problems")));
@@ -189,6 +195,8 @@ private:
             fieldLabels_[index] = localizedControl(L"STATIC", labels[index], SS_LEFT, 700 + index, 3);
             fields_[index] = edit(values[index], 400 + index, 3, index == 3);
         }
+        SendMessageW(fields_[4], EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("settings.local_ip_hint")));
+        requestLocalIpSuggestion();
         for (int index : {1, 5, 6, 7, 8}) NumericEdit::attach(fields_[index], 65535);
         NumericEdit::attach(fields_[9], 120);
         externalChoice_ = localizedControl(L"BUTTON", "field.external", WS_TABSTOP | BS_AUTOCHECKBOX, 413, 3);
@@ -443,6 +451,32 @@ private:
             configurationInteger(text(fields_[5])) != g_cfg.controlPort || hook != g_cfg.hookPort ||
             configurationInteger(text(fields_[7])) != g_cfg.udpPortStart || configurationInteger(text(fields_[8])) != g_cfg.udpPortEnd ||
             configurationInteger(text(fields_[9])) != g_cfg.idleTimeoutSec || trim(text(fields_[10])) != g_cfg.recordDir;
+    }
+
+    /// Suggest only blank/previously suggested drafts; keep adapter enumeration off the GUI thread.
+    void requestLocalIpSuggestion() {
+        if (g_offline || !fields_[0] || !fields_[4] || localIpWorker_.joinable()) return;
+        const string current = trim(text(fields_[4])), phone = trim(text(fields_[0]));
+        if ((!current.empty() && current != suggestedLocalIp_) || (!phone.empty() && !usableLocalIpv4(phone))) return;
+        localIpQuery_ = phone;
+        localIpWorker_ = std::thread([this, phone]() {
+            localIpResult_ = detectLocalIpv4(phone);
+            PostMessageW(window_, WM_APP + 25, 0, 0);
+        });
+    }
+
+    /// Discard stale phone results and preserve manual edits made while the lookup was running.
+    void completeLocalIpSuggestion() {
+        if (!localIpWorker_.joinable()) return;
+        localIpWorker_.join();
+        if (g_stopping) return;
+        if (localIpQuery_ != trim(text(fields_[0]))) { requestLocalIpSuggestion(); return; }
+        const string current = trim(text(fields_[4]));
+        if (!current.empty() && current != suggestedLocalIp_) return;
+        changingLocalIp_ = true;
+        SetWindowTextW(fields_[4], utf8ToWide(localIpResult_).c_str());
+        changingLocalIp_ = false;
+        suggestedLocalIp_ = localIpResult_;
     }
 
     /// Queue the explicit read-only inspection after explaining any unsaved or unapplied settings.
@@ -1203,6 +1237,8 @@ private:
         case WM_CTLCOLORSTATIC: SetBkColor(reinterpret_cast<HDC>(wparam), RGB(246, 248, 252)); SetTextColor(reinterpret_cast<HDC>(wparam), RGB(68, 88, 114)); return reinterpret_cast<LRESULT>(background_);
         case WM_CTLCOLOREDIT: SetBkColor(reinterpret_cast<HDC>(wparam), RGB(255, 255, 255)); SetTextColor(reinterpret_cast<HDC>(wparam), RGB(31, 51, 77)); return reinterpret_cast<LRESULT>(white_);
         case WM_COMMAND:
+            if (HIWORD(wparam) == EN_KILLFOCUS && LOWORD(wparam) == 400) { requestLocalIpSuggestion(); return 0; }
+            if (HIWORD(wparam) == EN_CHANGE && LOWORD(wparam) == 404) { if (!changingLocalIp_) suggestedLocalIp_.clear(); return 0; }
             if (HIWORD(wparam) == BN_SETFOCUS && LOWORD(wparam) == 415) { showFieldHelp(415); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 430) { changeLanguage(); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 824) { configureUpdates(); return 0; }
@@ -1260,6 +1296,7 @@ private:
         case kFileNotification: if (page_ == 1) refreshRecordings(true); InvalidateRect(window_, NULL, FALSE); return 0;
         case WM_APP + 23: if (analysisWorker_.joinable()) analysisWorker_.join(); EnableWindow(GetDlgItem(window_, 213), TRUE); refreshRecordings(true); if (!wparam) MessageBoxW(window_, uiText("message.analyse_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return 0;
         case WM_APP + 24: refreshUpdates(); return 0;
+        case WM_APP + 25: completeLocalIpSuggestion(); return 0;
         case WM_APP + 31:
             if (LOWORD(lparam) == NIN_BALLOONUSERCLICK) { if (updateBalloonActive_) command(904); trayBalloonActive_ = updateBalloonActive_ = false; return 0; }
             if (LOWORD(lparam) == NIN_BALLOONTIMEOUT || LOWORD(lparam) == NIN_BALLOONHIDE) trayBalloonActive_ = updateBalloonActive_ = false;
@@ -1278,6 +1315,7 @@ private:
             else { ShowWindow(window_, SW_HIDE); balloon(uiText("message.minimized")); }
             return 0;
         case WM_DESTROY:
+            if (localIpWorker_.joinable()) localIpWorker_.join();
             updates_.stop();
             player_.close();
             g_mainWindow = NULL; KillTimer(window_, 1);
@@ -1340,6 +1378,11 @@ private:
     int lastSessions_ = -1, lastActive_ = -1;
     /// Settings were saved for the next process start, not applied to live sockets.
     bool restartNeeded_ = false;
+    /// Local-address lookup owns no sockets and writes its result only before the GUI joins it.
+    std::thread localIpWorker_;
+    string localIpQuery_, localIpResult_, suggestedLocalIp_;
+    /// Distinguish a programmatic suggestion from an operator's manual edit notification.
+    bool changingLocalIp_ = false;
     /// Completed setup generation and modal reentry guard, owned by the GUI thread.
     uint64_t setupRevision_ = 0;
     bool setupDialog_ = false;

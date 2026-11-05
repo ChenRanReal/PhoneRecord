@@ -47,6 +47,8 @@ jobs:
         run: |
           ./tools/Test-Updates.ps1 -SkipTray
           if ($LASTEXITCODE -ne 0) { throw 'Update tests failed.' }
+          ./tools/Test-LocalIpv4.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Local IPv4 tests failed.' }
           python tests/product_smoke.py --output docs/probe/release/product
           if ($LASTEXITCODE -ne 0) { throw 'Recording tests failed.' }
       - name: Sign manifest for the verified executable
