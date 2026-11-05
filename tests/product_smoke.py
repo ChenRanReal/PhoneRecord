@@ -482,7 +482,9 @@ def main() -> int:
                 assert metadata["timestamp_overlap_or_reset"] == 1 and metadata["ssrc_changes"] == 1, metadata
                 with wave.open(str(path), "rb") as wav:
                     assert wav.readframes(wav.getnframes()) == g711.decode(encoded, "PCMA"), "diagnostics changed audio"
-                assert "RTP_CLOCK_DISCONTINUITY" in app.log() and "RTP_CLOCK_SUMMARY" in app.log()
+                # Final metadata is written before the session's summary log. Wait for
+                # that independent completion evidence instead of racing the worker.
+                wait_for(lambda: "RTP_CLOCK_DISCONTINUITY" in app.log() and "RTP_CLOCK_SUMMARY" in app.log())
             return "zero loss with clock gap/overlap detected; sequence/timestamp wrap and source switch handled; PCM unchanged"
 
         check("rtp_media_clock_diagnostics", media_clock)

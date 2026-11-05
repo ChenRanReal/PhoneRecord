@@ -58,7 +58,7 @@ def note(text):
     story.append(t)
 
 
-add('PHONERECORD 2.7.3  /  操作手冊  /  2026-11-05', 'small')
+add('PHONERECORD 2.7.4  /  操作手冊  /  2026-11-05', 'small')
 add('軟體設定', 'h1')
 add('先完成電腦端設定，再按「一鍵設定話機」，或手動設定電話網頁。最後以一通真實電話驗收。')
 sub('使用條件')
