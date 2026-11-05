@@ -2,7 +2,8 @@
 
 # PhoneRecord — Call Recording Workbench
 
-The current C++ desktop source version is **2.7.1**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+The current C++ desktop source version is **2.7.2**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+Version 2.7.2 adds Settings > Configure phone: review and confirm network recording and callback changes directly in the app, with encrypted backups and verified readback. No script is required. See the [Traditional Chinese PDF manual](output/pdf/PhoneRecord_操作與設定手冊.pdf).
 Version 2.7.0 adds [updates](docs/自動更新與發布.md): periodic background checks, separate update balloons and a persistent tray arrow. You choose when to download and restart while idle. Install an updater-enabled version manually once; official binaries are published under [GitHub Releases](https://github.com/ChenRanReal/PhoneRecord/releases).
 Version 2.6.0 adds historical call titles: select a recording and choose Rename or press F2. Titles remain searchable after reopening. Save blank to restore the original title; original contacts, numbers, times and audio files are retained.
 Version 2.5.0 adds optional startup at sign-in. The Settings checkbox applies immediately and defaults to off. When enabled, the app starts in the tray. After moving the exe, turn the option off and on to update its path.

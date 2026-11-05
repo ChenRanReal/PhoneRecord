@@ -23,6 +23,7 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
         actions = setupReadForm(body); return true;
     };
     const auto post = [&](const string& path, const string& payload) {
+        if (diagnosticSnapshot().callActive || g_sessionCount > 0) { result.cause = "SETUP_PHONE_BUSY"; return false; }
         const bool received = request("POST", path, payload, head, body, true);
         std::istringstream statusLine(head.substr(0, head.find("\r\n"))); string protocol; int status = 0; statusLine >> protocol >> status;
         const bool denied = status == 401 || status == 403 || loginPage(body);

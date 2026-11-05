@@ -12,6 +12,13 @@ struct PhoneSetupResult {
     bool ok = false, applied = false, rollbackAttempted = false, rollbackVerified = false;
 };
 
+/// Owned coordinator snapshot; only completed previews may be confirmed by the GUI.
+struct PhoneSetupProgress {
+    uint64_t revision = 0;
+    bool running = false, apply = false;
+    PhoneSetupResult result;
+};
+
 /// Form navigation and submission controls do not represent persistent device settings.
 static bool setupTransportField(const string& key) {
     return key == "ReturnPage" || key == "DefaultSubmit" || key == "CheckBoxManager";

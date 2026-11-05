@@ -214,7 +214,7 @@ private:
         startupChoice_ = localizedControl(L"BUTTON", "field.startup", WS_TABSTOP | BS_AUTOCHECKBOX | BS_NOTIFY, 415, 3);
         refreshStartup();
         button("button.save", 420, 3); button("button.browse", 421, 3); button("button.setup_guide", 422, 3); button("button.compatibility", 423, 3);
-        button("button.phone_setup_script", 424, 3);
+        button("button.phone_setup_direct", 424, 3); button("button.phone_setup_script", 425, 3);
         settingNote_ = localizedControl(L"EDIT", "settings.note", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 722, 3, WS_EX_CLIENTEDGE);
         SendMessageW(settingNote_, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont_), TRUE);
         helpTopic_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 800, 4);
@@ -319,7 +319,8 @@ private:
         move(notificationChoice_, left, 610, column - 12, 28);
         move(startupChoice_, left + column + 10, 610, column - 10, 28);
         move(GetDlgItem(window_, 422), left + 148, h - 74, 148, 36); move(GetDlgItem(window_, 423), left + 308, h - 74, 174, 36);
-        move(GetDlgItem(window_, 424), left + 494, h - 74, std::min(226, available - 494), 36);
+        move(GetDlgItem(window_, 424), left + 494, h - 74, 150, 36);
+        move(GetDlgItem(window_, 425), left + 656, h - 74, std::min(180, available - 656), 36);
         move(intervalLabel_, left + column + 10, 546, column - 10, 22); move(intervalChoice_, left + column + 10, 571, column - 10, 200);
         if (recordings_) {
             const int titles = std::max(320, available - 593);
@@ -846,6 +847,50 @@ private:
         MessageBoxW(window_, uiText(ok ? "setup.exported" : "message.export_failed"), L"PhoneRecord", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
     }
 
+    /// Review and apply supported phone settings through the existing serialized worker.
+    void requestPhoneSetup() {
+        if (setupDialog_ || g_commands.phoneSetupProgress().running) return;
+        if (restartNeeded_ || connectionDraftChanged() || !g_cfg.errors().empty()) {
+            MessageBoxW(window_, uiText("setup.direct_save_first"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return;
+        }
+        if (!g_commands.enqueue("setup_preview"))
+            MessageBoxW(window_, uiText("setup.direct_unavailable"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
+    }
+
+    /// Display each worker completion once; the confirmation stays on the GUI thread.
+    void refreshPhoneSetup() {
+        const auto progress = g_commands.phoneSetupProgress();
+        SetWindowTextW(GetDlgItem(window_, 424), uiText(progress.running ? "setup.direct_working" : "button.phone_setup_direct"));
+        EnableWindow(GetDlgItem(window_, 424), !progress.running && !setupDialog_ && !g_offline &&
+            !diagnosticSnapshot().callActive && g_sessionCount == 0 && !g_updateInstalling);
+        if (progress.running || progress.revision == setupRevision_ || setupDialog_) return;
+        setupRevision_ = progress.revision;
+        const auto& result = progress.result;
+        setupDialog_ = true;
+        if (result.ok && !progress.apply && !result.changes.empty()) {
+            wstring preview = uiText("setup.direct_preview");
+            preview += L"\r\n\r\n" + utf8ToWide(g_cfg.phoneIp + ":" + std::to_string(g_cfg.phonePort));
+            for (const auto& field : result.changes) preview += L"\r\n- " + wstring(uiText(("setup.field." + field).c_str()));
+            preview += L"\r\n\r\n" + wstring(uiText("setup.direct_confirm"));
+            const bool confirmed = MessageBoxW(window_, preview.c_str(), uiText("button.phone_setup_direct"),
+                MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) == IDYES;
+            LOGI("PHONE_SETUP_CONFIRM accepted=%d", confirmed);
+            if (confirmed && !g_stopping && IsWindow(window_)) {
+                if (restartNeeded_ || connectionDraftChanged())
+                    MessageBoxW(window_, uiText("setup.direct_save_first"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
+                else if (!g_commands.enqueue("setup_apply", "manual", result.planId))
+                    MessageBoxW(window_, uiText("setup.direct_unavailable"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
+            }
+        } else {
+            wstring message = result.ok && progress.apply ? uiText("setup.direct_done") : uiText(("setup." + result.code).c_str());
+            if (!result.cause.empty()) message += L"\r\n" + wstring(uiText(("setup." + result.cause).c_str()));
+            if (!result.backup.empty()) message += L"\r\n\r\n" + wstring(uiText("setup.direct_backup")) + L"\r\n" + utf8ToWide(result.backup);
+            MessageBoxW(window_, message.c_str(), uiText("button.phone_setup_direct"), MB_OK | (result.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            if (result.ok && !g_stopping && IsWindow(window_)) requestCompatibility();
+        }
+        setupDialog_ = false;
+    }
+
     /// Bind the Windows login entry to this executable and the active configuration file.
     UserStartup currentStartup() const {
         wchar_t executable[32768]{};
@@ -934,7 +979,8 @@ private:
         if (id == 313) { exportReport(); return; }
         if (id == 314) { openFolder(false); return; }
         if (id == 420) { saveSettings(); return; }
-        if (id == 424) { exportPhoneSetupScript(); return; }
+        if (id == 424) { requestPhoneSetup(); return; }
+        if (id == 425) { exportPhoneSetupScript(); return; }
         if (id == 422) { switchPage(4); SendMessageW(helpTopic_, CB_SETCURSEL, 6, 0); refreshHelp(); return; }
         if (id == 423 || id == 804) { requestCompatibility(); return; }
         if (id == 805) { copyReport(true); return; }
@@ -1206,7 +1252,7 @@ private:
             EnableWindow(GetDlgItem(window_, 423), !state.busy && !state.callActive && sessions == 0 && inspection.verdict != "running");
             EnableWindow(GetDlgItem(window_, 805), inspection.verdict != "idle" && inspection.verdict != "running");
             if (page_ == 4 && SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5 && (inspection.revision != lastCompatRevision_ || compatibilityRuntimeVerified(inspection, state, sessions) != lastCompatRuntime_)) refreshHelp();
-            updatePlayer(); refreshLogs(false); refreshUpdates();
+            updatePlayer(); refreshLogs(false); refreshUpdates(); refreshPhoneSetup();
             if (state.files != lastFiles_) { lastFiles_ = state.files; if (page_ == 1) refreshRecordings(true); }
             return 0;
         }
@@ -1294,6 +1340,9 @@ private:
     int lastSessions_ = -1, lastActive_ = -1;
     /// Settings were saved for the next process start, not applied to live sockets.
     bool restartNeeded_ = false;
+    /// Completed setup generation and modal reentry guard, owned by the GUI thread.
+    uint64_t setupRevision_ = 0;
+    bool setupDialog_ = false;
     /// Owned explicit file-analysis worker.
     std::thread analysisWorker_;
     /// Cancel explicit file analysis before joining on window destruction.

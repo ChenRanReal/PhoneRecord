@@ -47,10 +47,14 @@ public:
     void start() { running_ = true; worker_ = std::thread(&CommandCoordinator::loop, this); }
 
     /// Queue a bounded operation; Stop cancels in-flight Start waits immediately.
-    bool enqueue(const string& operation, const char* origin = "manual") {
+    bool enqueue(const string& operation, const char* origin = "manual", const string& setupPlan = "") {
         std::lock_guard<std::mutex> admission(g_updateAdmission);
         std::lock_guard<std::mutex> guard(mutex_);
         if (!running_ || g_stopping || g_updateInstalling) return false;
+        const bool setup = operation == "setup_preview" || operation == "setup_apply";
+        if (setup && (setupProgress_.running || g_offline || g_updateStartupPending ||
+            !g_cfg.errors().empty() || g_cfg.hookPort == 0 || callActive_ || g_sessionCount > 0 ||
+            (operation == "setup_apply" && setupPlan.empty()))) return false;
         if (operation == "start" && g_updateStartupPending) return false;
         if ((operation == "phone" || operation == "login" || operation == "compatibility" || operation == "start") && !g_cfg.errors().empty()) {
             if (operation == "compatibility") { CompatibilityReport report; report.verdict = "settings"; report.checkedAt = diagnosticTime(); report.items.push_back({"local", "fail", "local_fix"}); publishCompatibility(report); }
@@ -74,9 +78,22 @@ public:
         if (operation == "compatibility" && compatibilitySnapshot().verdict == "running") return false;
         if (std::find(queue_.begin(), queue_.end(), operation) != queue_.end()) return true;
         if (queue_.size() >= 8) { LOGW("COMMAND_QUEUE_FULL limit=8"); return false; }
+        if (setup) {
+            setupPlan_ = setupPlan;
+            setupProgress_.running = true;
+            setupProgress_.apply = operation == "setup_apply";
+            setupProgress_.result = PhoneSetupResult{};
+            ++setupProgress_.revision;
+        }
         if (operation == "compatibility") beginCompatibility();
         if (operation == "stop" || operation == "start") queue_.push_front(operation); else queue_.push_back(operation);
         wake_.notify_one(); return true;
+    }
+
+    /// Copy setup completion data without sharing mutable state with the GUI.
+    PhoneSetupProgress phoneSetupProgress() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return setupProgress_;
     }
 
     /// Reject new commands and optionally drain one explicit Stop before joining.
@@ -90,7 +107,7 @@ private:
     /// Execute operations without retaining the queue mutex or blocking the GUI thread.
     void loop() {
         while (true) {
-            string operation;
+            string operation, setupPlan;
             {
                 std::unique_lock<std::mutex> guard(mutex_);
                 wake_.wait_for(guard, std::chrono::milliseconds(500), [&]() { return !running_ || !queue_.empty(); });
@@ -108,14 +125,32 @@ private:
                         operation = "health";
                     }
                 }
+                if (operation == "setup_apply") setupPlan = setupPlan_;
             }
             {
                 std::lock_guard<std::mutex> admission(g_updateAdmission);
-                if (g_updateInstalling) continue;
+                if (g_updateInstalling) {
+                    if (operation == "setup_preview" || operation == "setup_apply") {
+                        std::lock_guard<std::mutex> guard(mutex_);
+                        setupProgress_.result.code = "SETUP_LOCAL_NOT_READY";
+                        setupProgress_.running = false; ++setupProgress_.revision;
+                    }
+                    continue;
+                }
                 diagnosticUpdate([](DiagnosticSnapshot& state) { state.busy = true; });
             }
             LOGI("OPERATION_BEGIN operation=%s", operation.c_str());
-            if (operation == "local") runLocalChecks();
+            if (operation == "setup_preview" || operation == "setup_apply") {
+                PhoneSetupResult result;
+                if (diagnosticSnapshot().callActive || g_sessionCount > 0) result.code = "SETUP_PHONE_BUSY";
+                else if (!runLocalChecks()) result.code = "SETUP_LOCAL_NOT_READY";
+                else if (!diagnosticSnapshot().authenticated && !g_phone.login()) result.code = "SETUP_AUTH_FAILED";
+                else result = g_phone.configurePhone(operation == "setup_apply", setupPlan);
+                std::lock_guard<std::mutex> guard(mutex_);
+                setupProgress_.result = std::move(result);
+                setupProgress_.running = false; ++setupProgress_.revision;
+            }
+            else if (operation == "local") runLocalChecks();
             else if (operation == "login") g_phone.login();
             else if (operation == "compatibility") {
                 runLocalChecks();
@@ -163,6 +198,9 @@ private:
     std::thread worker_;
     /// At most eight coalesced operation names.
     std::deque<string> queue_;
+    /// Preview/apply state and reviewed plan are protected by mutex_.
+    PhoneSetupProgress setupProgress_;
+    string setupPlan_;
     /// Worker lifetime, protected by mutex_.
     bool running_ = false;
     /// Deduplicate established-call events, protected by mutex_.

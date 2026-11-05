@@ -82,3 +82,6 @@ venv/
 *.update-new
 *.update-backup
 *.update-probe
+
+# Local document renders and isolated validation builds.
+/tmp/
