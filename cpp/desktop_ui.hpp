@@ -113,6 +113,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         WSACleanup(); if (stopSignal) CloseHandle(stopSignal); CloseHandle(singleton); return ok ? 0 : 1;
     }
     g_directory.reload();
+#ifdef _WIN64
+    g_speech.start(g_configPath);
+#endif
     const auto invalid = g_cfg.errors();
     std::unique_ptr<HttpServer> events;
     g_commands.start();
@@ -179,6 +182,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     g_commands.shutdown(true);
     g_stopping = true;
     if (g_recorder) { g_recorder->shutdown(); g_recorder.reset(); }
+#ifdef _WIN64
+    g_speech.stop();
+#endif
     LOGI("APP_STOP workers_joined=true");
     WSACleanup();
     if (stopSignal) CloseHandle(stopSignal);

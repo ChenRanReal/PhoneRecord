@@ -1,13 +1,13 @@
 // PhoneRecord 2 - Fanvil X3S 原生 C++ 通话录音工具
 //
-// 构建入口：cpp/build.bat。单个 x86 exe，静态链接 CRT，原生 Windows 界面。
+// 构建入口：cpp/build.bat (x86) / cpp/build-x64.bat。静态链接 CRT，原生 Windows 界面。
 // TCP 控制、UDP 媒体、HTTP 事件均有独立诊断证据；控制会话不等于音频成功。
 // 配套头文件分别维护诊断、接收、话机客户端、原生界面与资源。
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#if defined(_WIN64)
-#error PhoneRecord release manifests require an x86 build. Select the x86 MSVC tools.
+#if defined(_WIN64) && !defined(PHONERECORD_X64) && !defined(PHONERECORD_SPEECH_TESTING)
+#error Use tools/Build-Desktop.ps1 -Architecture x64 to select the matching manifest and resources.
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -368,6 +368,7 @@ static RecordStopFn  g_uiRecordStop  = NULL;
 
 // ===========================================================================
 #include "json_text.hpp"
+#include "speech_service.hpp"
 #include "recording_titles.hpp"
 
 // 号码 -> 姓名

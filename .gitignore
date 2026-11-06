@@ -89,3 +89,7 @@ venv/
 # Current-account encrypted phone callback pairing state.
 *.pairing
 *.pairing.pending
+
+# Optional speech preferences/queue may contain local recording identities.
+*.speech
+*.speech-queue

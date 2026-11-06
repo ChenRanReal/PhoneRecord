@@ -184,7 +184,15 @@ public:
 
     /// Fixed release URL constructed from validated numeric version, never from a remote executable URL.
     static wstring releaseUrl(const string& version, const wchar_t* asset) {
+#ifdef _WIN64
+        const std::map<wstring, wstring> names = {{L"PhoneRecord.exe", L"PhoneRecord-x64.exe"}, {L"PhoneRecord.exe.sha256", L"PhoneRecord-x64.exe.sha256"},
+            {L"update-manifest.txt", L"update-manifest-x64.txt"}, {L"update-manifest.sig", L"update-manifest-x64.sig"}};
+        const auto selected = names.find(asset);
+        if (selected == names.end()) return L"";
+        return L"https://github.com/ChenRanReal/PhoneRecord/releases/download/v" + utf8ToWide(version) + L"/" + selected->second;
+#else
         return L"https://github.com/ChenRanReal/PhoneRecord/releases/download/v" + utf8ToWide(version) + L"/" + asset;
+#endif
     }
 
 #ifdef PHONERECORD_UPDATE_TESTING

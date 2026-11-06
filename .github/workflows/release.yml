@@ -51,22 +51,38 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Local IPv4 tests failed.' }
           python tests/product_smoke.py --output docs/probe/release/product
           if ($LASTEXITCODE -ne 0) { throw 'Recording tests failed.' }
+      - name: Build and verify optional x64 desktop
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          ./tools/Build-Desktop.ps1 -Architecture x64 -OutputDirectory tmp/release-x64
+          ./tools/Test-Speech.ps1
+          python tests/speech_installer_test.py
+          if ($LASTEXITCODE -ne 0) { throw 'Speech installer diagnostics tests failed.' }
+          python tests/product_smoke.py --exe tmp/release-x64/PhoneRecord-x64.exe --output docs/probe/release/product-x64
+          if ($LASTEXITCODE -ne 0) { throw 'x64 recording tests failed.' }
       - name: Sign manifest for the verified executable
         shell: pwsh
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: ./tools/New-UpdateManifest.ps1 -Version $env:GITHUB_REF_NAME.Substring(1)
+      - name: Sign architecture-specific x64 update manifest
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: ./tools/New-UpdateManifest.ps1 -Version $env:GITHUB_REF_NAME.Substring(1) -Architecture x64 -Executable tmp/release-x64/PhoneRecord-x64.exe
       - name: Create draft, upload all assets, then publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          gh release create $tag --verify-tag --draft --generate-notes --title "PhoneRecord $tag" cpp/PhoneRecord.exe cpp/PhoneRecord.exe.sha256 cpp/update-manifest.txt cpp/update-manifest.sig
+          gh release create $tag --verify-tag --draft --generate-notes --title "PhoneRecord $tag" cpp/PhoneRecord.exe cpp/PhoneRecord.exe.sha256 cpp/update-manifest.txt cpp/update-manifest.sig tmp/release-x64/PhoneRecord-x64.exe tmp/release-x64/PhoneRecord-x64.exe.sha256 tmp/release-x64/update-manifest-x64.txt tmp/release-x64/update-manifest-x64.sig
           if ($LASTEXITCODE -ne 0) { throw 'Release creation/upload failed. No existing release will be overwritten.' }
           $release = gh release view $tag --json assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Cannot verify uploaded assets.' }
-          foreach ($name in @('PhoneRecord.exe','PhoneRecord.exe.sha256','update-manifest.txt','update-manifest.sig')) {
+          foreach ($name in @('PhoneRecord.exe','PhoneRecord.exe.sha256','update-manifest.txt','update-manifest.sig','PhoneRecord-x64.exe','PhoneRecord-x64.exe.sha256','update-manifest-x64.txt','update-manifest-x64.sig')) {
             if (-not ($release.assets | Where-Object name -eq $name)) { throw "Missing release asset: $name" }
           }
           $existing = gh release list --limit 100 --json tagName,isDraft,isPrerelease | ConvertFrom-Json

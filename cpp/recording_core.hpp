@@ -152,6 +152,7 @@ private:
             });
             if (!wav_.isOpen() && !openOutput()) { setWorkerReason("WAV_OPEN_FAILED"); break; }
             if (!wav_.write(pcm, rtp.payloadSize)) { setWorkerReason("WAV_WRITE_FAILED"); break; }
+            if (packetCount_ == 1) speechRecordingStarted(path_);
             quality_.add(pcm, rtp.payloadSize);
             diagnosticUpdate([&](DiagnosticSnapshot& state) {
                 state.pcmBytes += rtp.payloadSize * 2;
@@ -219,6 +220,7 @@ private:
             metadata.flush();
             if (!metadata) LOGE("QUALITY_SAVE_FAILED session=%s", tag_.c_str());
             appendLedger();
+            speechRecordingCompleted(path_);
             diagnosticUpdate([&](DiagnosticSnapshot& state) {
                 ++state.files; if (state.sessionTag != tag_) return; state.quality = category; state.peak = quality_.peak(); state.rms = quality_.rms();
                 state.stage = category == "audio" ? RecordingStage::Complete : RecordingStage::Failed;

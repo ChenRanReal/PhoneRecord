@@ -5,6 +5,15 @@
 
 IDI_PHONERECORD ICON "assets/phonerecord.ico"
 
+#ifdef PHONERECORD_X64
+1901 RCDATA "speech/install.ps1"
+1902 RCDATA "speech/worker.cjs"
+1903 RCDATA "speech/NOTICE.md"
+1904 RCDATA "speech/qwen-install.ps1"
+1905 RCDATA "speech/qwen-worker.py"
+1906 RCDATA "speech/qwen-assets.json"
+#endif
+
 IDD_RENAME_CALL DIALOGEX 0, 0, 340, 150
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Rename call"

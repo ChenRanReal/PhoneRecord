@@ -82,7 +82,13 @@ struct UpdateManifest {
         std::istringstream input(bytes); string magic, versionLine, architecture, file, sizeLine, hashLine, extra;
         if (!std::getline(input, magic) || !std::getline(input, versionLine) || !std::getline(input, architecture) ||
             !std::getline(input, file) || !std::getline(input, sizeLine) || !std::getline(input, hashLine) || std::getline(input, extra)) return false;
-        if (magic != "PhoneRecord-update-v1" || architecture != "arch=x86" || file != "file=PhoneRecord.exe" ||
+        if (magic != "PhoneRecord-update-v1" || architecture !=
+#ifdef _WIN64
+            "arch=x64"
+#else
+            "arch=x86"
+#endif
+            || file != "file=PhoneRecord.exe" ||
             versionLine.compare(0, 8, "version=") || sizeLine.compare(0, 5, "size=") || hashLine.compare(0, 7, "sha256=")) return false;
         version = versionLine.substr(8); sha256 = hashLine.substr(7); size = 0;
         std::array<unsigned, 3> parts{};
