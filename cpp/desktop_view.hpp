@@ -9,6 +9,7 @@
 #include "update_service.hpp"
 #include "update_installer.hpp"
 #include "local_ipv4.hpp"
+#include "tray_identity.hpp"
 
 /// Load a shared embedded product icon at the system's large or small native size.
 static HICON applicationIcon(bool smallSize = false) {
@@ -264,6 +265,7 @@ private:
         taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
         tray_.cbSize = sizeof(tray_); tray_.hWnd = window_; tray_.uID = 1; tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         tray_.uCallbackMessage = WM_APP + 31; tray_.hIcon = applicationIcon(true); wcscpy_s(tray_.szTip, L"PhoneRecord 2");
+        if (!initializeTrayIdentity(tray_)) LOGW("TRAY_STABLE_IDENTITY_FAILED win32=%lu", GetLastError());
         trayAdded_ = Shell_NotifyIconW(NIM_ADD, &tray_) != FALSE;
         updates_.start(window_, g_configPath, g_offline);
         const auto preferences = updates_.preferences();
@@ -1380,7 +1382,7 @@ private:
             if (available && !updateIcon_) updateIcon_ = createUpdateIcon();
             tray_.hIcon = available && updateIcon_ ? updateIcon_ : applicationIcon(true);
             const wstring tip = L"PhoneRecord " + utf8ToWide(kProductVersion) + (available ? L" — " + wstring(uiText("update.available")) + L" " + utf8ToWide(state.manifest.version) : L"");
-            wcsncpy_s(tray_.szTip, tip.c_str(), _TRUNCATE); tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            wcsncpy_s(tray_.szTip, tip.c_str(), _TRUNCATE); tray_.uFlags = (tray_.uFlags & NIF_GUID) | NIF_ICON | NIF_MESSAGE | NIF_TIP;
             if (trayAdded_) Shell_NotifyIconW(NIM_MODIFY, &tray_);
             RedrawWindow(GetDlgItem(window_, 105), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
         }
@@ -1389,7 +1391,7 @@ private:
         EnableWindow(GetDlgItem(window_, 822), !state.staged.empty() && !state.busy && !recording.callActive && g_sessionCount == 0 && g_activeRecordings == 0 && !recording.busy && !analysisWorker_.joinable() && !g_offline);
         if (available && !state.busy && !g_offline && preferences.balloons && preferences.notified != state.manifest.version &&
             lastUpdateBalloon_ != state.manifest.version && !recording.callActive && g_activeRecordings == 0 && trayAdded_ && !trayBalloonActive_ && GetTickCount64() >= nextBalloon_) {
-            NOTIFYICONDATAW info = tray_; info.uFlags = NIF_INFO; info.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME | NIIF_NOSOUND;
+            NOTIFYICONDATAW info = tray_; info.uFlags = (tray_.uFlags & NIF_GUID) | NIF_INFO; info.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME | NIIF_NOSOUND;
             const wstring title = wstring(uiText("update.available")) + L" " + utf8ToWide(state.manifest.version);
             wcsncpy_s(info.szInfoTitle, title.c_str(), _TRUNCATE); wcsncpy_s(info.szInfo, uiText("update.balloon_body"), _TRUNCATE);
             nextBalloon_ = GetTickCount64() + 60000;
@@ -1430,14 +1432,14 @@ private:
         if (!g_trayNotifications || g_offline) { LOGD("TRAY_NOTIFICATION_SUPPRESSED preference=%d offline=%d", g_trayNotifications.load(), g_offline); return; }
         if (!trayAdded_) return;
         if (trayBalloonActive_) return;
-        NOTIFYICONDATAW info = tray_; info.uFlags = NIF_INFO; info.dwInfoFlags = NIIF_INFO;
+        NOTIFYICONDATAW info = tray_; info.uFlags = (tray_.uFlags & NIF_GUID) | NIF_INFO; info.dwInfoFlags = NIIF_INFO;
         wcscpy_s(info.szInfoTitle, L"PhoneRecord"); wcsncpy_s(info.szInfo, message, _TRUNCATE); const bool sent = Shell_NotifyIconW(NIM_MODIFY, &info) != FALSE; if (sent) { trayBalloonActive_ = true; updateBalloonActive_ = false; } LOGD("TRAY_NOTIFICATION_REQUESTED sent=%d", sent);
     }
 
     /// Native message handler; background tasks communicate only through PostMessageW.
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (taskbarCreated_ && message == taskbarCreated_) {
-            tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP; trayAdded_ = Shell_NotifyIconW(NIM_ADD, &tray_) != FALSE;
+            tray_.uFlags = (tray_.uFlags & NIF_GUID) | NIF_ICON | NIF_MESSAGE | NIF_TIP; trayAdded_ = Shell_NotifyIconW(NIM_ADD, &tray_) != FALSE;
             refreshUpdates(true); return 0;
         }
         switch (message) {
