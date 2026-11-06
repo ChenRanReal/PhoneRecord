@@ -28,6 +28,7 @@ exe 可單獨首次啟動，沒有配置或必要欄位未填時直接開啟設�
 | 连接设置 | 編輯連接與目錄、關閉行為、氣泡通知及檢查頻率；連接變更重啟套用 |
 
 內建播放器使用 Windows waveOut，不啟動系統預設播放器。支援暫停／繼續、停止及拖曳進度。
+預設裝置回報 `MMSYSERR_BADDEVICEID`（`mm_result=2`）時，會有界嘗試系統已列舉的輸出裝置；無可用裝置時直接顯示三語處理建議。詳見[播放排查](../docs/PhoneRecord_使用與排查.md#內建播放與聯絡人)。
 關閉視窗可設為系統匣、工作列最小化或直接退出；預設保留系統匣。側欄或系統匣「退出程序」始終直接退出。
 托盤氣泡預設關閉，設定頁勾選或取消後保存即生效。
 
@@ -107,6 +108,8 @@ py -3 tests\desktop_smoke.py --output docs\probe\onboarding_20261103
 
 新增操作回歸：`tests\desktop_workflow.py --output docs\probe\onboarding_20261103\workflow`，包括實際音訊輸出、CSV／Unicode、健康恢復、捲動、關閉與 30 秒排程。
 
+播放裝置回歸：`pwsh -File tools\Test-AudioPlayer.ps1 -WithOutput`，包含預設裝置 `mm_result=2` 重現／有效裝置恢復、零裝置、裝置占用、格式拒絕、資源釋放與實際 Windows 靜音播放。不加 `-WithOutput` 時只執行模擬，不要求音效硬體。桌面流程與三語驗證可用 `--exe` 指定隔離建置。
+
 三語／輸入／說明：`tests\localization_smoke.py --output docs\probe\onboarding_20261103\localization`。
 事件埠遷移保護：`tests\event_port_migration.py`，使用合成表單驗證只改兩欄及回讀失敗的有界回復。
 
@@ -120,3 +123,7 @@ py -3 tests\desktop_smoke.py --output docs\probe\onboarding_20261103
 產品支援簡體中文、繁體中文與 English，文案集中於 `ui_resources.hpp`；`ui_text.hpp` 負責語言選擇與診斷建議。
 每個資源鍵必須提供三語文字，缺列不能編譯，缺漏鍵明確標記；語言偏好即時獨立保存。
 技術代碼、協議及資料格式保持穩定；Windows 系統對話框按作業系統語言顯示。文件使用繁體中文，涵蓋 UTF-8 無 BOM、CJK 與三語原生版面驗證。
+
+## 話機 IP 與 DHCP
+
+連線設定支援固定 IP 及 DHCP。DHCP 首次填入目前 IP、MAC，再執行一鍵設定話機；程式自動判斷網段，之後透過配對回呼追蹤 IP，不需 DNS 或手動重驗。完整使用條件與驗證範圍見 [DHCP 連線模式](../docs/DHCP連線模式.md)。

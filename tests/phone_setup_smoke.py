@@ -23,13 +23,16 @@ from product_smoke import App, BASE, startup_info
 class Phone:
     """Model two persistent forms, independent company callbacks and bounded failures."""
 
-    def __init__(self):
+    def __init__(self, host="127.0.0.1", port=0):
         """Create a fixture with disabled recording and no recording callbacks."""
         self.record = {"EnableRecord_RW": "0", "OtherToggle_RW": "1", "CSE_RecordType_RW": "2",
                        "CSE_RecordVoiceCodec_R": "G722", "SYS_RecordAddr_RW": "192.0.2.10", "SYS_RecordPort_RW": "9999",
                        "KeepText": '保留 "&<> value', "CheckBoxManager": "EnableRecord_RW,OtherToggle_RW,HiddenToggle_RW"}
         self.actions = {"AURL_CallEstablished_RW": "", "AURL_CallTerminated_RW": "",
+                        "AURL_SetupCompleted_RW": "", "AURL_IpChange_RW": "",
                         "AURL_Registered_RW": "https://example.test/status?token=synthetic-only", "KeepOther": "保持不變"}
+        self.on_start = None
+        self.on_stop = None
         self.requests = []
         self.writes = []
         self.corrupt_once = False
@@ -90,6 +93,11 @@ class Phone:
                     expected = hashlib.md5(b"offline:synthetic-setup:0123456789abcdef").hexdigest()
                     self.answer("OK" if values.get("encoded") == "offline:" + expected else "Password Error")
                     return
+                if self.path == "/Start" and owner.on_start:
+                    owner.status = 1; self.answer("accepted")
+                    threading.Thread(target=owner.on_start, daemon=True).start(); return
+                if self.path == "/Stop" and owner.on_stop:
+                    owner.status = 4; self.answer("stopped"); owner.on_stop(); return
                 if self.path not in ("/record.htm", "/action.htm"):
                     self.answer("forbidden", 403)
                     return
@@ -110,7 +118,7 @@ class Phone:
                     owner.corrupt_once = False
                 self.answer("OK")
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = ThreadingHTTPServer((host, port), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 

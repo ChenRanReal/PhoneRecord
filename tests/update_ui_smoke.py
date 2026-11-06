@@ -17,10 +17,8 @@ from product_smoke import App, BASE, wait_for
 
 
 def select_interval(window, index):
-    """Send the real combobox change notification; saving must not touch phone settings."""
-    choice = USER.GetDlgItem(window, 824)
-    USER.SendMessageW(choice, 0x014E, index, 0)
-    USER.SendMessageW(window, 0x0111, (1 << 16) | 824, choice)
+    """Invoke an update preference menu command without touching phone settings."""
+    USER.SendMessageW(window, 0x0111, 840 + index, 0)
 
 
 def verify_layout(window):
@@ -30,8 +28,10 @@ def verify_layout(window):
     client = w.RECT()
     USER.GetClientRect(window, ctypes.byref(client))
     positions = []
-    for control in (820, 821, 822, 824, 825, 826, 827, 829):
+    for control in (820, 821, 822, 826, 827, 829, 830):
         child = USER.GetDlgItem(window, control)
+        if not USER.GetWindowLongW(child, -16) & 0x10000000:
+            continue
         area = w.RECT()
         USER.GetWindowRect(child, ctypes.byref(area))
         point = w.POINT(area.left, area.top)
@@ -48,12 +48,14 @@ def main():
     """Verify translations, immediate independent preferences, hidden-window updates and shell recreation."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=pathlib.Path, required=True)
-    output = parser.parse_args().output.resolve()
+    parser.add_argument("--exe", type=pathlib.Path, default=BASE / "cpp/PhoneRecord.exe")
+    args = parser.parse_args()
+    output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     count = resources()
     checks = []
     with tempfile.TemporaryDirectory(prefix="PhoneRecord update UI 測試 ") as temporary:
-        app = App(pathlib.Path(temporary), BASE / "cpp/PhoneRecord.exe", output, "update_ui", gui=True)
+        app = App(pathlib.Path(temporary), args.exe.resolve(), output, "update_ui", gui=True)
         app.args += ["--capture-dir", str(output)]
         preferences = pathlib.Path(str(app.config) + ".updates")
         original = app.config.read_bytes()
@@ -75,8 +77,7 @@ def main():
             set_text(USER.GetDlgItem(window, 402), "unsaved synthetic draft")
             USER.SendMessageW(window, 0x0111, 105, 0)
             select_interval(window, 0)
-            USER.SendMessageW(USER.GetDlgItem(window, 825), 0x00F1, 0, 0)
-            USER.SendMessageW(window, 0x0111, 825, 0)
+            USER.SendMessageW(window, 0x0111, 845, 0)
             assert preferences.read_text(encoding="utf-8") == "hours=0\nballoons=0\nnotified=\n"
             assert app.config.read_bytes() == original
             assert title(USER.GetDlgItem(window, 402)) == "unsaved synthetic draft"
@@ -103,7 +104,7 @@ def main():
             checks.append("disabled periodic checks and update balloons survive restart; the 24-hour option saves independently")
     result = {"passed": True, "synthetic_only": True, "real_phone_contacted": False,
               "resources_per_language": count, "checks": checks,
-              "exe_sha256": hashlib.sha256((BASE / "cpp/PhoneRecord.exe").read_bytes()).hexdigest()}
+              "exe_sha256": hashlib.sha256(args.exe.resolve().read_bytes()).hexdigest()}
     (output / "update_ui_results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
 

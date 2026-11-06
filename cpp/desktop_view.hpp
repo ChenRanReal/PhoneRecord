@@ -165,14 +165,14 @@ private:
         SendMessageW(languageChoice_, CB_SETCURSEL, g_uiLanguage.load(), 0);
         // Project link beside the version. The visible control is the GitHub mark only.
         control(L"BUTTON", L"GitHub", WS_TABSTOP | BS_OWNERDRAW, 106, -1);
-        button("button.local", 502, 0); button("button.phone", 503, 0); button("button.phone_web", 504, 0);
+        button("button.compatibility", 502, 0); button("button.more", 506, 0);
         followRecent_ = localizedControl(L"BUTTON", "button.follow", WS_TABSTOP | BS_AUTOCHECKBOX, 505, 0);
         SendMessageW(followRecent_, BM_SETCHECK, BST_CHECKED, 0);
         recent_ = list(600, 0, {{"column.time", 170}, {"column.level", 65}, {"column.event", 700}});
         recordingSearch_ = edit("", 210, 1);
         SendMessageW(recordingSearch_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("search.recordings")));
-        button("button.play", 211, 1); button("button.reveal", 212, 1); button("button.analyse", 213, 1); button("button.refresh", 214, 1); button("button.open_folder", 215, 1);
-        button("button.rename", 221, 1); EnableWindow(GetDlgItem(window_, 221), FALSE);
+        button("button.play", 211, 1); button("button.refresh", 214, 1);
+        localizedControl(L"STATIC", "recordings.context_hint", SS_LEFT | SS_ENDELLIPSIS, 632, 1);
         recordings_ = list(610, 1, {{"column.time", 150}, {"column.title", 160}, {"column.direction", 58}, {"column.contact", 170}, {"column.duration", 64}, {"column.quality", 125}, {"column.source", 120}, {"column.size", 76}});
         playerSeek_ = control(TRACKBAR_CLASSW, L"", WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 218, 1);
         SendMessageW(playerSeek_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 1000));
@@ -186,7 +186,7 @@ private:
         SendMessageW(logFilter_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText("filter.all")));
         SendMessageW(logFilter_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText("filter.problems")));
         SendMessageW(logFilter_, CB_SETCURSEL, 0, 0);
-        button("button.copy", 312, 2); button("button.export", 313, 2); button("button.logs", 314, 2);
+        button("button.copy", 312, 2); button("button.more", 315, 2);
         diagnostics_ = list(620, 2, {{"column.sequence", 55}, {"column.time", 170}, {"column.level", 65}, {"column.event", 850}});
         detail_ = control(L"EDIT", uiText("diagnostics.placeholder"), ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 621, 2, WS_EX_CLIENTEDGE);
         const string values[] = {g_cfg.phoneIp, std::to_string(g_cfg.phonePort), g_cfg.phoneUser, g_cfg.phonePass, g_cfg.advertiseIp, std::to_string(g_cfg.controlPort), std::to_string(g_cfg.hookPort == 0 ? 18080 : g_cfg.hookPort), std::to_string(g_cfg.udpPortStart), std::to_string(g_cfg.udpPortEnd), std::to_string(g_cfg.idleTimeoutSec), g_cfg.recordDir};
@@ -197,6 +197,13 @@ private:
         }
         SendMessageW(fields_[4], EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("settings.local_ip_hint")));
         requestLocalIpSuggestion();
+        addressModeLabel_ = localizedControl(L"STATIC", "field.phone_address_mode", SS_LEFT, 726, 3);
+        addressModeChoice_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 416, 3);
+        for (const char* key : {"address.fixed", "address.dhcp"}) SendMessageW(addressModeChoice_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText(key)));
+        SendMessageW(addressModeChoice_, CB_SETCURSEL, g_cfg.phoneAddressMode == "dhcp" ? 1 : 0, 0);
+        addressStatus_ = control(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 728, 3);
+        addressIdentityLabel_ = localizedControl(L"STATIC", "field.phone_mac", SS_LEFT, 727, 3);
+        addressMac_ = edit(g_cfg.phoneMac, 417, 3);
         for (int index : {1, 5, 6, 7, 8}) NumericEdit::attach(fields_[index], 65535);
         NumericEdit::attach(fields_[9], 120);
         externalChoice_ = localizedControl(L"BUTTON", "field.external", WS_TABSTOP | BS_AUTOCHECKBOX, 413, 3);
@@ -221,8 +228,22 @@ private:
         SendMessageW(notificationChoice_, BM_SETCHECK, g_cfg.trayNotifications ? BST_CHECKED : BST_UNCHECKED, 0);
         startupChoice_ = localizedControl(L"BUTTON", "field.startup", WS_TABSTOP | BS_AUTOCHECKBOX | BS_NOTIFY, 415, 3);
         refreshStartup();
-        button("button.save", 420, 3); button("button.browse", 421, 3); button("button.setup_guide", 422, 3); button("button.compatibility", 423, 3);
-        button("button.phone_setup_direct", 424, 3); button("button.phone_setup_script", 425, 3);
+        localizedControl(L"STATIC", "field.record_folder_mode", SS_LEFT, 731, 3);
+        storageMode_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 418, 3);
+        const char* storageModes[] = {"flat", "daily", "weekly", "custom"};
+        for (int index = 0; index < 4; ++index) {
+            SendMessageW(storageMode_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText((string("storage.") + storageModes[index]).c_str())));
+            if (g_cfg.recordFolderMode == storageModes[index]) SendMessageW(storageMode_, CB_SETCURSEL, index, 0);
+        }
+        localizedControl(L"STATIC", "field.record_folder_pattern", SS_LEFT, 732, 3);
+        storagePattern_ = edit(g_cfg.recordFolderPattern, 419, 3);
+        SendMessageW(storagePattern_, EM_SETLIMITTEXT, 120, 0);
+        storagePreview_ = control(L"STATIC", L"", SS_LEFT, 733, 3);
+        button("button.save", 420, 3); button("button.browse", 421, 3); button("button.more", 435, 3);
+        button("button.phone_setup_direct", 424, 3);
+        button("settings.basic", 432, 3); button("settings.advanced", 433, 3); button("settings.preferences", 434, 3);
+        basicIpSummary_ = control(L"STATIC", L"", SS_LEFT, 729, 3);
+        localizedControl(L"STATIC", "settings.basic_hint", SS_LEFT, 730, 3);
         settingNote_ = localizedControl(L"EDIT", "settings.note", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 722, 3, WS_EX_CLIENTEDGE);
         SendMessageW(settingNote_, WM_SETFONT, reinterpret_cast<WPARAM>(smallFont_), TRUE);
         helpTopic_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 800, 4);
@@ -230,8 +251,9 @@ private:
         SendMessageW(helpTopic_, CB_SETCURSEL, 0, 0);
         button("button.compatibility", 804, 4); button("button.compatibility_copy", 805, 4);
         helpText_ = control(L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 801, 4, WS_EX_CLIENTEDGE);
-        refreshHelp(); showFieldHelp(-1);
+        refreshHelp(); refreshAddressMode(); showFieldHelp(-1);
         button("update.check", 820, 5); button("update.download", 821, 5); button("update.install", 822, 5);
+        button("update.preferences", 830, 5);
         localizedControl(L"STATIC", "update.interval", SS_LEFT, 828, 5);
         updateInterval_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 824, 5);
         for (const char* key : {"update.off", "update.hour1", "update.hour6", "update.hour12", "update.hour24"}) SendMessageW(updateInterval_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(uiText(key)));
@@ -269,7 +291,8 @@ private:
         for (const auto& child : controls_) {
             if (child.id >= 100 && child.id <= 104) move(child.window, 14, 118 + (child.id - 100) * 54, 148, 42);
             if (child.id == 902) move(child.window, 14, h - 88, 148, 34);
-            if (child.id >= 502 && child.id <= 504) move(child.window, left + (child.id - 502) * 126, 460, 116, 34);
+            if (child.id == 502) move(child.window, left, 460, 240, 34);
+            if (child.id == 506) move(child.window, left + 252, 460, 148, 34);
             if (child.id == 505) move(child.window, w - 182, 464, 158, 28);
         }
         move(languageChoice_, 14, h - 139, 148, 28);
@@ -277,7 +300,8 @@ private:
         move(GetDlgItem(window_, 828), left, 110, 190, 24); move(updateInterval_, left + 200, 106, 180, 200);
         move(updateBalloons_, left + 400, 106, available - 400, 30);
         move(updateStatus_, left, 152, available, 98);
-        move(GetDlgItem(window_, 820), left, 264, 160, 34); move(GetDlgItem(window_, 821), left + 174, 264, 160, 34); move(GetDlgItem(window_, 822), left + 348, 264, 220, 34);
+        move(GetDlgItem(window_, 820), left, 264, 160, 34); move(GetDlgItem(window_, 821), left + 174, 264, 220, 34); move(GetDlgItem(window_, 822), left + 174, 264, 220, 34);
+        move(GetDlgItem(window_, 830), w - 224, 106, 200, 34);
         move(GetDlgItem(window_, 829), left, 312, available, 88); move(updateNotes_, left, 414, available, h - 452);
         if (HWND link = GetDlgItem(window_, 106)) {
             HDC dc = GetDC(window_);
@@ -286,50 +310,58 @@ private:
             const int hit = 22;
             move(link, std::min(21 + textWidth + 5, 176 - 8 - hit), h - 42, hit, hit);
         }
-        move(helpTopic_, left, 110, available - 354, 240); move(GetDlgItem(window_, 804), w - 366, 110, 174, 32); move(GetDlgItem(window_, 805), w - 180, 110, 156, 32); move(helpText_, left, 158, available, h - 200);
+        const bool reportTopic = SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5;
+        move(helpTopic_, left, 110, reportTopic ? available - 430 : available, 240); move(GetDlgItem(window_, 804), w - 442, 110, 246, 32); move(GetDlgItem(window_, 805), w - 184, 110, 160, 32); move(helpText_, left, 158, available, h - 200);
         move(recent_, left, 534, available, h - 576);
         move(recordingSearch_, left, 110, available, 32);
-        const int recordingActions[] = {211, 221, 212, 213, 214, 215};
-        const int recordingWidths[] = {88, 110, 110, 116, 98, 154};
+        const int recordingActions[] = {211, 214};
+        const int recordingWidths[] = {88, 98};
         int actionLeft = left;
         for (size_t index = 0; index < std::size(recordingActions); ++index) { move(GetDlgItem(window_, recordingActions[index]), actionLeft, 152, recordingWidths[index], 32); actionLeft += recordingWidths[index] + 10; }
+        move(GetDlgItem(window_, 632), actionLeft + 8, 156, available - (actionLeft - left) - 8, 26);
         move(recordings_, left, 198, available, h - 380);
         move(playerCaption_, left + 16, h - 164, available - 32, 24);
         move(playerSeek_, left + 10, h - 128, available - 178, 28);
         move(playerTime_, w - 178, h - 128, 136, 26);
         move(GetDlgItem(window_, 216), left + 16, h - 86, 112, 32);
         move(GetDlgItem(window_, 217), left + 140, h - 86, 112, 32);
-        move(logSearch_, left, 110, std::max(170, available - 488), 32);
-        move(logFilter_, w - 492, 110, 136, 240);
-        for (const auto& child : controls_) if (child.id >= 312 && child.id <= 314) move(child.window, w - 346 + (child.id - 312) * 106, 110, 100, 32);
+        move(logSearch_, left, 110, available - 432, 32);
+        move(logFilter_, w - 444, 110, 136, 240);
+        move(GetDlgItem(window_, 312), w - 296, 110, 116, 32);
+        move(GetDlgItem(window_, 315), w - 168, 110, 144, 32);
         move(diagnostics_, left, 158, available, h - 354);
         move(detail_, left, h - 182, available, 134);
         const int column = available / 2;
-        const int phonePositions[] = {0, 1, 2, 3};
-        for (int index : phonePositions) { move(fieldLabels_[index], left, 146 + index * 64, column - 30, 22); move(fields_[index], left, 171 + index * 64, column - 32, 30); }
-        for (int index = 4; index < 10; ++index) {
-            const int row = index - 4;
-            if (index == 8) continue;
-            const int y = row >= 5 ? 146 + 4 * 64 : 146 + row * 64;
-            move(fieldLabels_[index], left + column + 10, y, column - 10, 22);
-            move(fields_[index], left + column + 10, y + 25, column - 10, 30);
-        }
-        // UDP start/end share one row; timeout follows it.
-        move(fields_[6], left + column + 10, 299, 128, 30);
-        move(externalChoice_, left + column + 148, 299, column - 148, 30);
-        move(fieldLabels_[7], left + column + 10, 338, column / 2 - 12, 22); move(fields_[7], left + column + 10, 363, column / 2 - 12, 30);
-        move(fieldLabels_[8], left + column + column / 2 + 10, 338, column / 2 - 10, 22); move(fields_[8], left + column + column / 2 + 10, 363, column / 2 - 10, 30);
-        move(fieldLabels_[9], left + column + 10, 402, column - 10, 22); move(fields_[9], left + column + 10, 427, column - 10, 30);
-        move(fieldLabels_[10], left, 478, available, 22); move(fields_[10], left, 503, available - 120, 30);
-        for (const auto& child : controls_) { if (child.id == 421) move(child.window, w - 136, 503, 112, 30); if (child.id == 420) move(child.window, left, h - 74, 136, 36); }
-        move(settingNote_, left, 402, column - 30, 72);
-        move(closeLabel_, left, 546, column - 30, 22); move(closeChoice_, left, 571, column - 32, 180);
-        move(notificationChoice_, left, 610, column - 12, 28);
-        move(startupChoice_, left + column + 10, 610, column - 10, 28);
-        move(GetDlgItem(window_, 422), left + 148, h - 74, 148, 36); move(GetDlgItem(window_, 423), left + 308, h - 74, 174, 36);
-        move(GetDlgItem(window_, 424), left + 494, h - 74, 150, 36);
-        move(GetDlgItem(window_, 425), left + 656, h - 74, std::min(180, available - 656), 36);
-        move(intervalLabel_, left + column + 10, 546, column - 10, 22); move(intervalChoice_, left + column + 10, 571, column - 10, 200);
+        for (int index = 0; index < 3; ++index) move(GetDlgItem(window_, 432 + index), left + index * 176, 110, 164, 34);
+        const auto settingField = [&](int index, bool right, int y, int fieldWidth = 0) {
+            const int x = left + (right ? column + 10 : 0), size = fieldWidth ? fieldWidth : column - 24;
+            move(fieldLabels_[index], x, y, size, 22); move(fields_[index], x, y + 25, size, 32);
+        };
+        settingField(0, false, 176); settingField(2, false, 252); settingField(3, true, 252);
+        move(fieldLabels_[10], left, 330, available, 22); move(fields_[10], left, 355, available - 120, 32);
+        move(GetDlgItem(window_, 421), w - 136, 355, 112, 32);
+        move(addressStatus_, left + column + 10, settingsGroup_ == 0 ? 176 : 148, column - 24, 26);
+        move(basicIpSummary_, left + column + 10, 210, column - 24, 36);
+        move(GetDlgItem(window_, 730), left, 412, available, 58);
+        move(addressModeLabel_, left, 166, column - 24, 22); move(addressModeChoice_, left, 191, column - 24, 220);
+        move(addressIdentityLabel_, left + column + 10, 166, column - 24, 22); move(addressMac_, left + column + 10, 191, column - 24, 32);
+        settingField(1, false, 244); settingField(4, true, 244);
+        settingField(5, false, 322); settingField(6, true, 322, 110);
+        move(externalChoice_, left + column + 130, 347, column - 144, 32);
+        settingField(7, false, 400); settingField(8, true, 400); settingField(9, false, 478);
+        move(intervalLabel_, left + column + 10, 478, column - 24, 22); move(intervalChoice_, left + column + 10, 503, column - 24, 200);
+        move(closeLabel_, left, 176, available, 22); move(closeChoice_, left, 201, std::min(available, 460), 180);
+        move(notificationChoice_, left, 260, available, 30); move(startupChoice_, left, 310, available, 30);
+        move(GetDlgItem(window_, 731), left, 376, column - 24, 22); move(storageMode_, left, 401, column - 24, 200);
+        move(GetDlgItem(window_, 732), left + column + 10, 376, column - 24, 22); move(storagePattern_, left + column + 10, 401, column - 24, 32);
+        move(storagePreview_, left, 449, available, 64);
+        const int noteTop = settingsGroup_ == 0 ? 482 : settingsGroup_ == 1 ? 554 : 530;
+        move(settingNote_, left, noteTop, available, std::max(40, std::min(settingsGroup_ == 1 ? 68 : 110, h - 96 - noteTop)));
+        move(GetDlgItem(window_, 420), left, h - 74, 136, 36);
+        move(GetDlgItem(window_, 424), left + 148, h - 74, 180, 36);
+        move(GetDlgItem(window_, 435), w - 188, h - 74, 164, 36);
+        refreshSettingsVisibility();
+        refreshActionVisibility();
         if (recordings_) {
             const int titles = std::max(320, available - 593);
             ListView_SetColumnWidth(recordings_, 1, px(titles / 2));
@@ -340,6 +372,96 @@ private:
         InvalidateRect(window_, NULL, FALSE);
     }
 
+    /// Keep every settings draft alive while exposing only its selected category.
+    void refreshSettingsVisibility() {
+        if (!basicIpSummary_) return;
+        for (const auto& child : controls_) if (child.page == 3) {
+            const int id = child.id;
+            int group = 1;
+            if (id == 400 || id == 402 || id == 403 || id == 410 || id == 700 || id == 702 || id == 703 || id == 710 || id == 421 || id == 729 || id == 730) group = 0;
+            else if (id == 411 || id == 723 || id == 414 || id == 415 || id == 418 || id == 419 || (id >= 731 && id <= 733)) group = 2;
+            else if (id == 722 || id == 420 || id == 435 || (id >= 432 && id <= 434)) group = -1;
+            else if (id == 424) group = 0;
+            bool visible = page_ == 3 && (group < 0 || group == settingsGroup_);
+            if (id == 728) visible = page_ == 3 && settingsGroup_ == 0;
+            if (id == 419 || id == 732) visible = visible && storageModeDraft() == "custom";
+            if (id == 417 || id == 727) visible = visible && addressModeDraft() == "dhcp";
+            ShowWindow(child.window, visible ? SW_SHOW : SW_HIDE);
+        }
+        const string address = trim(text(fields_[4]));
+        const wstring summary = wstring(uiText("settings.local_summary")) + L"\r\n" + (address.empty() ? uiText("settings.local_pending") : utf8ToWide(address));
+        SetWindowTextW(basicIpSummary_, summary.c_str());
+        refreshStoragePreview();
+    }
+
+    /// Read a stable storage policy independently from localized labels.
+    string storageModeDraft() const {
+        const int index = static_cast<int>(SendMessageW(storageMode_, CB_GETCURSEL, 0, 0));
+        const char* modes[] = {"flat", "daily", "weekly", "custom"};
+        return index >= 0 && index < 4 ? modes[index] : "flat";
+    }
+
+    /// Preview the destination without creating folders or modifying saved/runtime settings.
+    void refreshStoragePreview() {
+        if (!storagePreview_) return;
+        string folder;
+        const bool valid = recordingSubfolder(storageModeDraft(), text(storagePattern_), recordingLocalTime(), folder);
+        const wstring value = valid ? wstring(uiText("storage.preview")) + utf8ToWide(trim(text(fields_[10])) + (folder.empty() ? "" : "\\" + folder)) : uiText("storage.invalid");
+        SetWindowTextW(storagePreview_, value.c_str());
+    }
+
+    /// Expose report and update actions only when their current state makes them useful.
+    void refreshActionVisibility() {
+        const bool report = page_ == 4 && SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5;
+        for (int id : {804, 805}) ShowWindow(GetDlgItem(window_, id), report ? SW_SHOW : SW_HIDE);
+        // The existing controls retain preference state; the native menu is their visible entry.
+        for (int id : {824, 825, 828}) ShowWindow(GetDlgItem(window_, id), SW_HIDE);
+        const auto update = updates_.state();
+        ShowWindow(GetDlgItem(window_, 821), page_ == 5 && !update.manifest.version.empty() && update.staged.empty() ? SW_SHOW : SW_HIDE);
+        ShowWindow(GetDlgItem(window_, 822), page_ == 5 && !update.staged.empty() ? SW_SHOW : SW_HIDE);
+    }
+
+    /// Open page-specific secondary actions from a keyboard-accessible More button.
+    void moreActions(int anchor) {
+        HMENU menu = CreatePopupMenu(); if (!menu) return;
+        const auto item = [&](int id, const char* key, bool enabled = true) {
+            AppendMenuW(menu, MF_STRING | (enabled ? 0 : MF_GRAYED), id, uiText(key));
+        };
+        if (anchor == 315) { item(313, "button.export"); item(314, "button.logs"); }
+        else {
+            if (anchor == 435) item(423, "button.compatibility", IsWindowEnabled(GetDlgItem(window_, 502)) != FALSE);
+            item(504, "button.phone_web", !phoneAddress().empty());
+            item(422, "button.setup_guide");
+        }
+        RECT bounds{}; GetWindowRect(GetDlgItem(window_, anchor), &bounds);
+        const UINT action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, bounds.left, bounds.bottom, 0, window_, NULL);
+        DestroyMenu(menu);
+        if (action) command(static_cast<int>(action));
+    }
+
+    /// Edit update scheduling and notifications without saving any connection draft.
+    void updatePreferencesMenu() {
+        HMENU menu = CreatePopupMenu(); if (!menu) return;
+        const auto preferences = updates_.preferences();
+        const int hours[] = {0, 1, 6, 12, 24};
+        const char* keys[] = {"update.off", "update.hour1", "update.hour6", "update.hour12", "update.hour24"};
+        for (int index = 0; index < 5; ++index)
+            AppendMenuW(menu, MF_STRING | (preferences.hours == hours[index] ? MF_CHECKED : 0), 840 + index, uiText(keys[index]));
+        AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(menu, MF_STRING | (preferences.balloons ? MF_CHECKED : 0), 845, uiText("update.balloons"));
+        RECT bounds{}; GetWindowRect(GetDlgItem(window_, 830), &bounds);
+        const UINT action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, bounds.left, bounds.bottom, 0, window_, NULL);
+        DestroyMenu(menu);
+        if (action) command(static_cast<int>(action));
+    }
+
+    /// Change only the visible category; this never saves, reloads or resets configuration.
+    void selectSettingsGroup(int group) {
+        if (group < 0 || group > 2) return;
+        settingsGroup_ = group; showFieldHelp(-1); layout();
+        for (int id = 432; id <= 434; ++id) InvalidateRect(GetDlgItem(window_, id), NULL, TRUE);
+    }
+
     /// Switch pages, keeping their visible controls and their diagnostic snapshots consistent.
     void switchPage(int page) {
         page_ = page;
@@ -348,6 +470,7 @@ private:
         if (page == 1) refreshRecordings(true);
         if (page == 2) refreshLogs(true);
         if (page == 4) refreshHelp();
+        refreshAddressMode();
         layout();
         // Owner-drawn children do not inherit their parent's invalidation. Explicitly
         // repaint all menu items so precisely one item reflects the current page.
@@ -369,20 +492,50 @@ private:
     /// Resolve a validation field to translated product copy while retaining its stable config key.
     wstring fieldDisplayName(const string& field) const {
         const std::pair<const char*, const char*> fields[] = {
-            {"phone_ip", "field.phone_ip"}, {"phone_port", "field.phone_port"}, {"phone_user", "field.user"},
+            {"phone_address_mode", "field.phone_address_mode"}, {"phone_mac", "field.phone_mac"}, {"phone_ip", "field.phone_ip"}, {"phone_port", "field.phone_port"}, {"phone_user", "field.user"},
             {"phone_pass_dpapi", "field.password"}, {"advertise_ip", "field.local_ip"}, {"control_port", "field.control"},
             {"hook_port", "field.event"}, {"udp_port_range", "field.udp_start"}, {"idle_timeout", "field.timeout"},
-            {"health_interval", "field.health"}, {"close_action", "field.close"}, {"record_dir", "field.directory"}, {"tray_notifications", "field.notifications"}
+            {"record_folder_mode", "field.record_folder_mode"}, {"record_folder_pattern", "field.record_folder_pattern"}, {"health_interval", "field.health"}, {"close_action", "field.close"}, {"record_dir", "field.directory"}, {"tray_notifications", "field.notifications"}
         };
         for (const auto& value : fields) if (field == value.first) return uiText(value.second);
         return utf8ToWide(field);
     }
 
+    /// Show the live target independently from unsaved settings and the immutable discovery hint.
+    void refreshAddressStatus() {
+        const string address = phoneAddress();
+        const wstring value = wstring(uiText("address.current")) + utf8ToWide(address.empty() ? "—" : address);
+        SetWindowTextW(addressStatus_, value.c_str());
+        lastAddressRevision_ = g_phoneAddressRevision;
+    }
+
+    /// Read the semantic mode without translating or using display labels as configuration values.
+    string addressModeDraft() const {
+        const LRESULT index = SendMessageW(addressModeChoice_, CB_GETCURSEL, 0, 0);
+        return index == 1 ? "dhcp" : "fixed";
+    }
+
+    /// Retain inactive drafts while showing the mode's identity source and editable fields.
+    void refreshAddressMode() {
+        refreshAddressStatus();
+        const bool dhcp = addressModeDraft() == "dhcp";
+        SetWindowTextW(addressIdentityLabel_, uiText("field.phone_mac"));
+        refreshSettingsVisibility();
+        EnableWindow(addressMac_, dhcp); EnableWindow(fields_[0], TRUE);
+        if (dhcp) { SendMessageW(externalChoice_, BM_SETCHECK, BST_UNCHECKED, 0); EnableWindow(fields_[6], TRUE); }
+        EnableWindow(externalChoice_, !dhcp);
+        if (settingsGroup_ == 1) SetWindowTextW(settingNote_, uiText(dhcp ? "address.help_dhcp" : "address.help_fixed"));
+        else showFieldHelp(-1);
+    }
+
     /// Show the selected setting's purpose in a scrollable inline note, without touching its value.
     void showFieldHelp(int id) {
         focusedSetting_ = id;
-        const char* keys[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "close", "health", "external", "notifications", "startup"};
-        if (id == 415) {
+        const char* keys[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "record_folder_mode", "record_folder_pattern", "close", "health", "external", "notifications", "startup"};
+        if (id == 418 || id == 419) { SetWindowTextW(settingNote_, uiText("storage.help"));
+        } else if (id >= 416 && id <= 417) {
+            SetWindowTextW(settingNote_, uiText(id == 417 ? "help.field.phone_mac" : "help.field.phone_address_mode"));
+        } else if (id == 415) {
             const auto state = currentStartup().read();
             const char* status = state.error ? "startup.unavailable" : state.enabled ? state.thisCopy ? "startup.enabled" : "startup.other_copy" : "startup.disabled";
             const wstring message = wstring(uiText(status)) + L"\r\n" + uiText("help.field.startup");
@@ -390,7 +543,7 @@ private:
         } else if (id >= 400 && id <= 414) {
             const string key = string("help.field.") + keys[id - 400];
             SetWindowTextW(settingNote_, uiText(key.c_str()));
-        } else SetWindowTextW(settingNote_, uiText(g_cfg.errors().empty() ? "settings.note" : "first_run.note"));
+        } else SetWindowTextW(settingNote_, uiText(settingsGroup_ == 2 ? "settings.preferences_note" : g_cfg.errors().empty() ? "settings.note" : "first_run.note"));
     }
 
     /// Build localized help using generic callback templates and address-free inspection results.
@@ -399,8 +552,8 @@ private:
         const int topic = static_cast<int>(SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0));
         wstring body;
         if (topic == 1) {
-            const char* fields[] = {"phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "close", "health", "external", "language", "notifications", "startup"};
-            const char* configs[] = {"phone_ip", "phone_port", "phone_user", "phone_pass_dpapi", "advertise_ip", "control_port", "hook_port", "udp_port_start", "udp_port_end", "idle_timeout", "record_dir", "close_action", "health_interval", "hook_port=0", "config.ini.ui", "tray_notifications", "Windows"};
+            const char* fields[] = {"phone_address_mode", "phone_mac", "phone_ip", "phone_port", "user", "password", "local_ip", "control", "event", "udp_start", "udp_end", "timeout", "directory", "record_folder_mode", "record_folder_pattern", "close", "health", "external", "language", "notifications", "startup"};
+            const char* configs[] = {"phone_address_mode", "phone_mac", "phone_ip", "phone_port", "phone_user", "phone_pass_dpapi", "advertise_ip", "control_port", "hook_port", "udp_port_start", "udp_port_end", "idle_timeout", "record_dir", "record_folder_mode", "record_folder_pattern", "close_action", "health_interval", "hook_port=0", "config.ini.ui", "tray_notifications", "Windows"};
             for (size_t index = 0; index < std::size(fields); ++index) {
                 body += wstring(uiText((string("field.") + fields[index]).c_str())) + L" [" + utf8ToWide(configs[index]) + L"]\r\n";
                 body += uiText((string("help.field.") + fields[index]).c_str()); body += L"\r\n\r\n";
@@ -422,6 +575,7 @@ private:
         SetWindowTextW(helpText_, body.c_str());
         const auto report = compatibilitySnapshot(); lastCompatRevision_ = report.revision;
         lastCompatRuntime_ = compatibilityRuntimeVerified(report, diagnosticSnapshot(), g_sessionCount.load());
+        layout();
     }
 
     /// Format the inspection using only resource keys, never inspected addresses or callback values.
@@ -446,11 +600,11 @@ private:
     /// Identify connection drafts so a new user never checks a different saved phone by mistake.
     bool connectionDraftChanged() const {
         const int hook = SendMessageW(externalChoice_, BM_GETCHECK, 0, 0) == BST_CHECKED ? 0 : configurationInteger(text(fields_[6]));
-        return trim(text(fields_[0])) != g_cfg.phoneIp || configurationInteger(text(fields_[1])) != g_cfg.phonePort ||
+        return addressModeDraft() != g_cfg.phoneAddressMode || trim(text(addressMac_)) != g_cfg.phoneMac || trim(text(fields_[0])) != g_cfg.phoneIp || configurationInteger(text(fields_[1])) != g_cfg.phonePort ||
             trim(text(fields_[2])) != g_cfg.phoneUser || text(fields_[3]) != g_cfg.phonePass || trim(text(fields_[4])) != g_cfg.advertiseIp ||
             configurationInteger(text(fields_[5])) != g_cfg.controlPort || hook != g_cfg.hookPort ||
             configurationInteger(text(fields_[7])) != g_cfg.udpPortStart || configurationInteger(text(fields_[8])) != g_cfg.udpPortEnd ||
-            configurationInteger(text(fields_[9])) != g_cfg.idleTimeoutSec || trim(text(fields_[10])) != g_cfg.recordDir;
+            configurationInteger(text(fields_[9])) != g_cfg.idleTimeoutSec || trim(text(fields_[10])) != g_cfg.recordDir || storageModeDraft() != g_cfg.recordFolderMode || text(storagePattern_) != g_cfg.recordFolderPattern;
     }
 
     /// Suggest only blank/previously suggested drafts; keep adapter enumeration off the GUI thread.
@@ -477,6 +631,7 @@ private:
         SetWindowTextW(fields_[4], utf8ToWide(localIpResult_).c_str());
         changingLocalIp_ = false;
         suggestedLocalIp_ = localIpResult_;
+        refreshSettingsVisibility();
     }
 
     /// Queue the explicit read-only inspection after explaining any unsaved or unapplied settings.
@@ -499,6 +654,10 @@ private:
             ListView_SetColumn(listing.first, static_cast<int>(column), &value);
         }
         translateCombo(logFilter_, {"filter.all", "filter.problems"});
+        translateCombo(addressModeChoice_, {"address.fixed", "address.dhcp"});
+        refreshAddressMode();
+        translateCombo(storageMode_, {"storage.flat", "storage.daily", "storage.weekly", "storage.custom"});
+        refreshSettingsVisibility();
         translateCombo(closeChoice_, {"close.tray", "close.minimize", "close.exit"});
         translateCombo(intervalChoice_, {"interval.off", "interval.30", "interval.60", "interval.120", "interval.300"}, true);
         translateCombo(helpTopic_, {"help.topic.start", "help.topic.fields", "help.topic.ports", "help.topic.devices", "help.topic.diagnostics", "help.topic.compatibility", "help.topic.setup"});
@@ -561,10 +720,6 @@ private:
         if (page_ == 1) paintPlayer(dc);
         if (page_ == 1) drawText(dc, uiText("footer.evidence"), 200, height() - 36, width() - 224, 24, RGB(100, 116, 139), smallFont_);
         if (page_ == 2) drawText(dc, uiText("footer.logs"), 200, height() - 36, width() - 224, 24, RGB(100, 116, 139), smallFont_);
-        if (page_ == 3) {
-            drawText(dc, uiText("section.phone"), 200, 108, 280, 26, RGB(31, 51, 77), valueFont_);
-            drawText(dc, uiText("section.receiver"), 200 + (width() - 224) / 2 + 10, 108, 300, 26, RGB(31, 51, 77), valueFont_);
-        }
         BitBlt(target, 0, 0, bounds.right, bounds.bottom, dc, 0, 0, SRCCOPY);
         SelectObject(dc, old); DeleteObject(bitmap); DeleteDC(dc); if (!external) EndPaint(window_, &paint);
     }
@@ -614,10 +769,10 @@ private:
         else if (g_cfg.hookPort == 0) code = "EXTERNAL_TRIGGER_MODE";
         else if (!active && state.authenticated && state.controlListening && state.eventListening && state.localHealth.status == 1) code = compatibilitySnapshot().verdict == "ready" || state.attemptRtp ? "AUTO_RECORD_READY" : "PHONE_SETUP_REQUIRED";
         if (!g_diagnosticLog.storageError().empty()) code = g_diagnosticLog.storageError();
-        const wstring guidance = utf8ToWide(code) + L"  ·  " + diagnosticHint(code);
+        const wstring guidance = diagnosticHint(code);
         drawText(dc, guidance, 216, 410, available - 32, 24, RGB(70, 88, 112), smallFont_);
         drawText(dc, uiText("section.recent"), 200, 506, available, 24, RGB(70, 88, 112), smallFont_);
-        const wstring footer = utf8ToWide(state.changedAt) + L"   ·   " + std::to_wstring(state.files) + L" WAV   ·   " + std::to_wstring(state.pcmBytes / 1024) + L" KiB PCM";
+        const wstring footer = utf8ToWide(state.changedAt) + L"   ·   " + std::to_wstring(state.files) + uiText("overview.saved_suffix");
         drawText(dc, footer, 200, height() - 34, available, 22, RGB(100, 116, 139), smallFont_);
     }
 
@@ -629,12 +784,21 @@ private:
 
     /// Refresh playback buttons and cursor without changing recording or network state.
     void updatePlayer() {
-        player_.pump();
+        const bool ok = player_.pump();
         const bool loaded = player_.loaded();
         EnableWindow(GetDlgItem(window_, 216), loaded); EnableWindow(GetDlgItem(window_, 217), loaded); EnableWindow(playerSeek_, loaded);
         SetWindowTextW(GetDlgItem(window_, 216), uiText(player_.playing() ? "player.pause" : "player.resume"));
         SetWindowTextW(playerTime_, (playbackTime(player_.position()) + L" / " + playbackTime(player_.length())).c_str());
         if (!seeking_) SendMessageW(playerSeek_, TBM_SETPOS, TRUE, player_.length() ? static_cast<LPARAM>(static_cast<uint64_t>(player_.position()) * 1000 / player_.length()) : 0);
+        if (!ok) showPlayerError();
+    }
+
+    /// Release a failed playback session and display its localized cause and technical code once.
+    void showPlayerError() {
+        const wchar_t* reason = uiText(player_.errorKey());
+        const wstring message = wstring(reason) + L"\r\n\r\n" + player_.errorDetails();
+        player_.close(); updatePlayer(); SetWindowTextW(playerCaption_, reason);
+        MessageBoxW(window_, message.c_str(), L"PhoneRecord", MB_OK | MB_ICONWARNING);
     }
 
     /// Draw the GitHub mark into a device rectangle. The path is the 24-unit octocat, even-odd filled.
@@ -693,9 +857,10 @@ private:
             if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &item->rcItem);
             return;
         }
-        const bool nav = (id >= 100 && id <= 105) || id == 902, active = id >= 100 && id <= 105 && id - 100 == page_;
+        const bool tab = id >= 432 && id <= 434;
+        const bool nav = (id >= 100 && id <= 105) || id == 902, active = (id >= 100 && id <= 105 && id - 100 == page_) || (tab && id - 432 == settingsGroup_);
         const bool disabled = (item->itemState & ODS_DISABLED) != 0, pressed = (item->itemState & ODS_SELECTED) != 0;
-        COLORREF fill = nav ? active ? RGB(43, 105, 230) : RGB(20, 32, 51) : id == 500 || id == 420 ? RGB(43, 105, 230) : RGB(255, 255, 255);
+        COLORREF fill = nav ? active ? RGB(43, 105, 230) : RGB(20, 32, 51) : id == 500 || id == 420 || (tab && active) ? RGB(43, 105, 230) : RGB(255, 255, 255);
         if (pressed) fill = nav || id == 500 || id == 420 ? RGB(29, 79, 180) : RGB(232, 239, 250);
         HBRUSH surface = CreateSolidBrush(nav ? RGB(20, 32, 51) : RGB(246, 248, 252));
         FillRect(item->hDC, &item->rcItem, surface); DeleteObject(surface);
@@ -704,7 +869,7 @@ private:
         RoundRect(item->hDC, item->rcItem.left, item->rcItem.top, item->rcItem.right, item->rcItem.bottom, px(8), px(8));
         SelectObject(item->hDC, oldBrush); SelectObject(item->hDC, oldPen); DeleteObject(brush); DeleteObject(pen);
         wchar_t label[128]{}; GetWindowTextW(item->hwndItem, label, 128); SetBkMode(item->hDC, TRANSPARENT);
-        SetTextColor(item->hDC, disabled ? RGB(142, 153, 169) : nav || id == 500 || id == 420 ? RGB(255, 255, 255) : RGB(42, 62, 90));
+        SetTextColor(item->hDC, disabled ? RGB(142, 153, 169) : nav || id == 500 || id == 420 || (tab && active) ? RGB(255, 255, 255) : RGB(42, 62, 90));
         HGDIOBJ font = SelectObject(item->hDC, font_); RECT area = item->rcItem; DrawTextW(item->hDC, label, -1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX); SelectObject(item->hDC, font);
         if (item->itemState & ODS_FOCUS) { InflateRect(&area, -px(4), -px(4)); DrawFocusRect(item->hDC, &area); }
     }
@@ -725,11 +890,23 @@ private:
             const uint64_t topSequence = previousTop >= 0 && previousTop < static_cast<int>(recentSequences_.size()) ? recentSequences_[previousTop] : 0;
             recentSequences_.clear();
             SendMessageW(recent_, WM_SETREDRAW, FALSE, 0); ListView_DeleteAllItems(recent_);
-            const size_t first = all.size() > 100 ? all.size() - 100 : 0;
-            for (size_t index = first; index < all.size(); ++index) { const auto& item = all[index]; recentSequences_.push_back(item.sequence); row(recent_, static_cast<int>(index - first), {utf8ToWide(item.time.substr(11)), utf8ToWide(item.level), utf8ToWide(item.text)}); }
-            if (SendMessageW(followRecent_, BM_GETCHECK, 0, 0) == BST_CHECKED && !all.empty()) ListView_EnsureVisible(recent_, static_cast<int>(all.size() - first - 1), FALSE);
+            std::vector<const DiagnosticEntry*> issues;
+            for (const auto& item : all) if (item.level == "WARN" || item.level == "ERROR") issues.push_back(&item);
+            const size_t first = issues.size() > 100 ? issues.size() - 100 : 0;
+            for (size_t index = first; index < issues.size(); ++index) {
+                const auto& item = *issues[index];
+                const string code = item.text.substr(0, item.text.find(' '));
+                row(recent_, static_cast<int>(recentSequences_.size()), {utf8ToWide(item.time.substr(11)), utf8ToWide(item.level), diagnosticHint(code)});
+                recentSequences_.push_back(item.sequence);
+            }
+            if (recentSequences_.empty()) row(recent_, 0, {L"", L"", uiText("overview.no_issues")});
+            // Re-enable redraw before reading the native scroll position; while it is
+            // disabled, a rebuilt list can report the old cached top index.
+            SendMessageW(recent_, WM_SETREDRAW, TRUE, 0);
+            ShowWindow(recent_, page_ == 0 ? SW_SHOW : SW_HIDE);
+            if (SendMessageW(followRecent_, BM_GETCHECK, 0, 0) == BST_CHECKED && !recentSequences_.empty()) ListView_EnsureVisible(recent_, static_cast<int>(recentSequences_.size() - 1), FALSE);
             else for (size_t index = 0; index < recentSequences_.size(); ++index) if (recentSequences_[index] == topSequence) { RECT bounds{}; if (ListView_GetItemRect(recent_, 0, &bounds, LVIR_BOUNDS)) ListView_Scroll(recent_, 0, (static_cast<int>(index) - ListView_GetTopIndex(recent_)) * (bounds.bottom - bounds.top)); break; }
-            SendMessageW(recent_, WM_SETREDRAW, TRUE, 0); InvalidateRect(recent_, NULL, TRUE);
+            InvalidateRect(recent_, NULL, TRUE);
         }
         if (page_ != 2 && !force) return;
         const string search = toLower(text(logSearch_)); const bool problems = SendMessageW(logFilter_, CB_GETCURSEL, 0, 0) == 1;
@@ -868,17 +1045,34 @@ private:
         MessageBoxW(window_, uiText(output ? "message.exported" : "message.export_failed"), L"PhoneRecord", MB_OK | (output ? MB_ICONINFORMATION : MB_ICONERROR));
     }
 
-    /// Export a local setup script only after the visible connection values are applied.
-    void exportPhoneSetupScript() {
-        if (restartNeeded_ || connectionDraftChanged() || !g_cfg.errors().empty()) { MessageBoxW(window_, uiText("setup.save_first"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
-        if (diagnosticSnapshot().callActive || g_sessionCount > 0) { MessageBoxW(window_, uiText("setup.SETUP_PHONE_BUSY"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
-        wchar_t path[32768] = L"PhoneRecord-phone-setup.cmd";
-        OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = window_; dialog.lpstrFile = path;
-        dialog.nMaxFile = static_cast<DWORD>(std::size(path)); dialog.lpstrFilter = L"Windows CMD (*.cmd)\0*.cmd\0\0";
-        dialog.lpstrDefExt = L"cmd"; dialog.lpstrTitle = uiText("button.phone_setup_script"); dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-        if (!GetSaveFileNameW(&dialog)) return;
-        const bool ok = writePhoneSetupScript(path);
-        MessageBoxW(window_, uiText(ok ? "setup.exported" : "message.export_failed"), L"PhoneRecord", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONERROR));
+    /// Offer secondary recording actions for the clicked row or keyboard selection.
+    void recordingContextMenu(LPARAM position) {
+        POINT point{static_cast<short>(LOWORD(position)), static_cast<short>(HIWORD(position))};
+        if (point.x == -1 && point.y == -1) {
+            const int selected = ListView_GetNextItem(recordings_, -1, LVNI_SELECTED);
+            RECT bounds{};
+            if (selected >= 0 && ListView_GetItemRect(recordings_, selected, &bounds, LVIR_BOUNDS)) point = {bounds.left + 20, bounds.bottom};
+            else point = {16, 16};
+            ClientToScreen(recordings_, &point);
+        } else {
+            POINT local = point; ScreenToClient(recordings_, &local);
+            LVHITTESTINFO hit{}; hit.pt = local;
+            const int index = ListView_HitTest(recordings_, &hit);
+            ListView_SetItemState(recordings_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+            if (index >= 0) ListView_SetItemState(recordings_, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        }
+        const bool selected = ListView_GetNextItem(recordings_, -1, LVNI_SELECTED) >= 0;
+        HMENU menu = CreatePopupMenu(); if (!menu) return;
+        const UINT flags = MF_STRING | (selected ? 0 : MF_GRAYED);
+        AppendMenuW(menu, flags, 211, uiText("button.play"));
+        AppendMenuW(menu, flags, 221, uiText("button.rename"));
+        AppendMenuW(menu, flags, 212, uiText("button.reveal"));
+        AppendMenuW(menu, MF_STRING, 215, uiText("button.open_folder"));
+        AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(menu, MF_STRING | (selected && !analysisWorker_.joinable() ? 0 : MF_GRAYED), 213, uiText("button.analyse"));
+        const UINT action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, point.x, point.y, 0, window_, NULL);
+        DestroyMenu(menu);
+        if (action) command(static_cast<int>(action));
     }
 
     /// Review and apply supported phone settings through the existing serialized worker.
@@ -903,7 +1097,7 @@ private:
         setupDialog_ = true;
         if (result.ok && !progress.apply && !result.changes.empty()) {
             wstring preview = uiText("setup.direct_preview");
-            preview += L"\r\n\r\n" + utf8ToWide(g_cfg.phoneIp + ":" + std::to_string(g_cfg.phonePort));
+            preview += L"\r\n\r\n" + utf8ToWide(phoneAddress() + ":" + std::to_string(g_cfg.phonePort));
             for (const auto& field : result.changes) preview += L"\r\n- " + wstring(uiText(("setup.field." + field).c_str()));
             preview += L"\r\n\r\n" + wstring(uiText("setup.direct_confirm"));
             const bool confirmed = MessageBoxW(window_, preview.c_str(), uiText("button.phone_setup_direct"),
@@ -956,12 +1150,14 @@ private:
     /// Validate a separate settings copy and preserve the live socket configuration until restart.
     void saveSettings() {
         Config candidate = g_cfg; candidate.formatError = false;
+        candidate.phoneAddressMode = addressModeDraft(); candidate.phoneMac = trim(text(addressMac_));
         candidate.phoneIp = trim(text(fields_[0])); candidate.phonePort = configurationInteger(text(fields_[1]));
         candidate.phoneUser = trim(text(fields_[2])); candidate.phonePass = text(fields_[3]); candidate.advertiseIp = trim(text(fields_[4]));
         candidate.secretError = g_cfg.secretError && candidate.phonePass.empty();
         candidate.controlPort = configurationInteger(text(fields_[5])); candidate.hookPort = SendMessageW(externalChoice_, BM_GETCHECK, 0, 0) == BST_CHECKED ? 0 : configurationInteger(text(fields_[6]));
         candidate.udpPortStart = configurationInteger(text(fields_[7])); candidate.udpPortEnd = configurationInteger(text(fields_[8])); candidate.idleTimeoutSec = configurationInteger(text(fields_[9]));
         candidate.recordDir = trim(text(fields_[10]));
+        candidate.recordFolderMode = storageModeDraft(); candidate.recordFolderPattern = text(storagePattern_);
         candidate.trayNotifications = SendMessageW(notificationChoice_, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0;
         const int close = static_cast<int>(SendMessageW(closeChoice_, CB_GETCURSEL, 0, 0));
         candidate.closeAction = close == 2 ? "exit" : close == 1 ? "minimize" : "tray";
@@ -970,10 +1166,21 @@ private:
         if (candidate.recordDir != g_cfg.recordDir) candidate.ledgerFile = candidate.recordDir + "\\calls.csv";
         auto invalid = candidate.errors();
         if (candidate.hookPort == 0 && SendMessageW(externalChoice_, BM_GETCHECK, 0, 0) != BST_CHECKED) invalid.push_back("hook_port");
-        if (!invalid.empty()) { wstring description = uiText("message.invalid"); for (const auto& item : invalid) description += L"\n• " + fieldDisplayName(item) + L" [" + utf8ToWide(item) + L"]"; MessageBoxW(window_, description.c_str(), L"PhoneRecord", MB_OK | MB_ICONWARNING); return; }
+        if (!invalid.empty()) {
+            const std::map<string, int> targets = {{"phone_ip", 400}, {"phone_user", 402}, {"phone_pass_dpapi", 403}, {"record_dir", 410}, {"record_folder_mode", 418}, {"record_folder_pattern", 419},
+                {"phone_address_mode", 416}, {"phone_mac", 417}, {"phone_port", 401}, {"advertise_ip", 404}, {"control_port", 405},
+                {"hook_port", 406}, {"udp_port_range", 407}, {"idle_timeout", 409}, {"health_interval", 412}, {"close_action", 411}, {"tray_notifications", 414}};
+            const auto target = targets.find(invalid.front());
+            const int id = target == targets.end() ? 400 : target->second;
+            switchPage(3); selectSettingsGroup(id == 400 || id == 402 || id == 403 || id == 410 ? 0 : id == 411 || id == 414 || id == 418 || id == 419 ? 2 : 1);
+            SetFocus(GetDlgItem(window_, id));
+            wstring description = uiText("message.invalid");
+            for (const auto& item : invalid) description += L"\n• " + fieldDisplayName(item) + L" [" + utf8ToWide(item) + L"]";
+            MessageBoxW(window_, description.c_str(), L"PhoneRecord", MB_OK | MB_ICONWARNING); return;
+        }
         if (!saveConfiguration(candidate)) { MessageBoxW(window_, uiText("message.save_failed"), L"PhoneRecord", MB_OK | MB_ICONERROR); return; }
         g_closeAction = close; g_healthIntervalSec = candidate.healthIntervalSec; g_trayNotifications = candidate.trayNotifications != 0;
-        restartNeeded_ = candidate.phoneIp != g_cfg.phoneIp || candidate.phonePort != g_cfg.phonePort || candidate.phoneUser != g_cfg.phoneUser || candidate.phonePass != g_cfg.phonePass || candidate.advertiseIp != g_cfg.advertiseIp || candidate.controlPort != g_cfg.controlPort || candidate.hookPort != g_cfg.hookPort || candidate.udpPortStart != g_cfg.udpPortStart || candidate.udpPortEnd != g_cfg.udpPortEnd || candidate.idleTimeoutSec != g_cfg.idleTimeoutSec || candidate.recordDir != g_cfg.recordDir;
+        restartNeeded_ = candidate.phoneAddressMode != g_cfg.phoneAddressMode || candidate.phoneMac != g_cfg.phoneMac || candidate.phoneIp != g_cfg.phoneIp || candidate.phonePort != g_cfg.phonePort || candidate.phoneUser != g_cfg.phoneUser || candidate.phonePass != g_cfg.phonePass || candidate.advertiseIp != g_cfg.advertiseIp || candidate.controlPort != g_cfg.controlPort || candidate.hookPort != g_cfg.hookPort || candidate.udpPortStart != g_cfg.udpPortStart || candidate.udpPortEnd != g_cfg.udpPortEnd || candidate.idleTimeoutSec != g_cfg.idleTimeoutSec || candidate.recordDir != g_cfg.recordDir || candidate.recordFolderMode != g_cfg.recordFolderMode || candidate.recordFolderPattern != g_cfg.recordFolderPattern;
         MessageBoxW(window_, uiText("message.saved"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); InvalidateRect(window_, NULL, FALSE);
     }
 
@@ -997,15 +1204,22 @@ private:
         if (id == 820 || id == 903) { updates_.request(); refreshUpdates(true); return; }
         if (id == 821) { updates_.request(true); return; }
         if (id == 822) { installUpdate(); return; }
+        if (id == 506 || id == 315 || id == 435) { moreActions(id); return; }
+        if (id == 830) { updatePreferencesMenu(); return; }
+        if (id >= 840 && id <= 845) {
+            if (id == 845) SendMessageW(updateBalloons_, BM_SETCHECK, SendMessageW(updateBalloons_, BM_GETCHECK, 0, 0) == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED, 0);
+            else SendMessageW(updateInterval_, CB_SETCURSEL, id - 840, 0);
+            configureUpdates(); return;
+        }
         if (id == 904) { command(901); switchPage(5); refreshUpdates(true); return; }
         if (id == 825) { configureUpdates(); return; }
-        if (id == 502) { g_commands.enqueue("local"); return; }
+        if (id == 502) { requestCompatibility(); return; }
         if (id == 503) { g_commands.enqueue("phone"); return; }
         if (id == 505) { refreshLogs(true); return; }
         if (id == 106) { ShellExecuteW(window_, L"open", L"https://github.com/ChenRanReal/PhoneRecord", NULL, NULL, SW_SHOWNORMAL); return; }
-        if (id == 504) { ShellExecuteW(window_, L"open", utf8ToWide("http://" + g_cfg.phoneIp + ":" + std::to_string(g_cfg.phonePort)).c_str(), NULL, NULL, SW_SHOWNORMAL); return; }
-        if (id == 216) { if (player_.playing()) player_.pause(); else player_.play(); updatePlayer(); return; }
-        if (id == 217) { player_.stop(); updatePlayer(); return; }
+        if (id == 504) { if (phoneAddress().empty()) { MessageBoxW(window_, uiText("address.unresolved"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; } ShellExecuteW(window_, L"open", utf8ToWide("http://" + phoneAddress() + ":" + std::to_string(g_cfg.phonePort)).c_str(), NULL, NULL, SW_SHOWNORMAL); return; }
+        if (id == 216) { const bool ok = player_.playing() ? player_.pause() : player_.play(); if (!ok) showPlayerError(); else updatePlayer(); return; }
+        if (id == 217) { if (!player_.stop()) showPlayerError(); else updatePlayer(); return; }
         if (id == 214) { refreshRecordings(true); return; }
         if (id == 221) { renameRecording(); return; }
         if (id == 215) { openFolder(true); return; }
@@ -1013,22 +1227,25 @@ private:
         if (id == 313) { exportReport(); return; }
         if (id == 314) { openFolder(false); return; }
         if (id == 420) { saveSettings(); return; }
+        if (id >= 432 && id <= 434) { selectSettingsGroup(id - 432); return; }
         if (id == 424) { requestPhoneSetup(); return; }
-        if (id == 425) { exportPhoneSetupScript(); return; }
         if (id == 422) { switchPage(4); SendMessageW(helpTopic_, CB_SETCURSEL, 6, 0); refreshHelp(); return; }
         if (id == 423 || id == 804) { requestCompatibility(); return; }
         if (id == 805) { copyReport(true); return; }
         if (id == 414) { showFieldHelp(414); return; }
-        if (id == 415) { changeStartup(); return; }
+        if (id == 418 || id == 419) { SetWindowTextW(settingNote_, uiText("storage.help"));
+        } else if (id >= 416 && id <= 417) {
+            SetWindowTextW(settingNote_, uiText(id == 417 ? "help.field.phone_mac" : "help.field.phone_address_mode"));
+        } else if (id == 415) { changeStartup(); return; }
         if (id == 413) { EnableWindow(fields_[6], SendMessageW(externalChoice_, BM_GETCHECK, 0, 0) != BST_CHECKED); showFieldHelp(413); return; }
         if (id == 421) { browse(); return; }
         if (id == 211 || id == 212 || id == 213) {
             const string path = selectedFile(); if (path.empty()) return;
-            if (id == 212) { const size_t split = path.find_last_of('\\'); revealFile(path.substr(split + 1)); return; }
+            if (id == 212) { const size_t prefix = g_cfg.recordDir.size() + 1; revealFile(path.substr(prefix)); return; }
             HANDLE check = CreateFileW(utf8ToWide(path).c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
             if (check == INVALID_HANDLE_VALUE) { MessageBoxW(window_, uiText("message.busy_file"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; } CloseHandle(check);
             if (id == 211) {
-                if ((path != player_.path() && !player_.open(path, window_)) || !player_.play()) { MessageBoxW(window_, uiText("message.player_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return; }
+                if ((path != player_.path() && !player_.open(path, window_)) || !player_.play()) { showPlayerError(); return; }
                 const size_t split = path.find_last_of('\\'); const auto title = readRecordingTitle(utf8ToWide(path));
                 SetWindowTextW(playerCaption_, title.value.empty() ? utf8ToWide(path.substr(split + 1)).c_str() : title.value.c_str()); updatePlayer();
             }
@@ -1057,6 +1274,7 @@ private:
         paint(dc);
         for (const auto& child : controls_) {
             if (child.page >= 0 && child.page != page_) continue;
+            if (!(GetWindowLongW(child.window, GWL_STYLE) & WS_VISIBLE)) continue;
             RECT bounds{}; GetWindowRect(child.window, &bounds);
             POINT point{bounds.left, bounds.top}; ScreenToClient(window_, &point);
             const int saved = SaveDC(dc); SetViewportOrgEx(dc, point.x, point.y, NULL);
@@ -1166,6 +1384,7 @@ private:
             if (trayAdded_) Shell_NotifyIconW(NIM_MODIFY, &tray_);
             RedrawWindow(GetDlgItem(window_, 105), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
         }
+        refreshActionVisibility();
         const auto recording = diagnosticSnapshot();
         EnableWindow(GetDlgItem(window_, 822), !state.staged.empty() && !state.busy && !recording.callActive && g_sessionCount == 0 && g_activeRecordings == 0 && !recording.busy && !analysisWorker_.joinable() && !g_offline);
         if (available && !state.busy && !g_offline && preferences.balloons && preferences.notified != state.manifest.version &&
@@ -1237,11 +1456,16 @@ private:
         case WM_CTLCOLORSTATIC: SetBkColor(reinterpret_cast<HDC>(wparam), RGB(246, 248, 252)); SetTextColor(reinterpret_cast<HDC>(wparam), RGB(68, 88, 114)); return reinterpret_cast<LRESULT>(background_);
         case WM_CTLCOLOREDIT: SetBkColor(reinterpret_cast<HDC>(wparam), RGB(255, 255, 255)); SetTextColor(reinterpret_cast<HDC>(wparam), RGB(31, 51, 77)); return reinterpret_cast<LRESULT>(white_);
         case WM_COMMAND:
+            if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 416) { refreshAddressMode(); return 0; }
+            if ((HIWORD(wparam) == EN_SETFOCUS && LOWORD(wparam) == 417) || (HIWORD(wparam) == CBN_SETFOCUS && LOWORD(wparam) == 416)) { showFieldHelp(LOWORD(wparam)); return 0; }
             if (HIWORD(wparam) == EN_KILLFOCUS && LOWORD(wparam) == 400) { requestLocalIpSuggestion(); return 0; }
             if (HIWORD(wparam) == EN_CHANGE && LOWORD(wparam) == 404) { if (!changingLocalIp_) suggestedLocalIp_.clear(); return 0; }
             if (HIWORD(wparam) == BN_SETFOCUS && LOWORD(wparam) == 415) { showFieldHelp(415); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 430) { changeLanguage(); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 824) { configureUpdates(); return 0; }
+            if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 418) { refreshSettingsVisibility(); showFieldHelp(418); return 0; }
+            if (HIWORD(wparam) == EN_CHANGE && (LOWORD(wparam) == 419 || LOWORD(wparam) == 410)) { refreshStoragePreview(); return 0; }
+            if ((HIWORD(wparam) == EN_SETFOCUS && LOWORD(wparam) == 419) || (HIWORD(wparam) == CBN_SETFOCUS && LOWORD(wparam) == 418)) { showFieldHelp(LOWORD(wparam)); return 0; }
             if (HIWORD(wparam) == CBN_SELCHANGE && LOWORD(wparam) == 800) { refreshHelp(); return 0; }
             if (HIWORD(wparam) == EN_SETFOCUS && LOWORD(wparam) >= 400 && LOWORD(wparam) <= 410) { showFieldHelp(LOWORD(wparam)); return 0; }
             if (HIWORD(wparam) == CBN_SETFOCUS && (LOWORD(wparam) == 411 || LOWORD(wparam) == 412)) { showFieldHelp(LOWORD(wparam)); return 0; }
@@ -1251,9 +1475,9 @@ private:
             return 0;
         case WM_NOTIFY: {
             auto* notice = reinterpret_cast<NMHDR*>(lparam);
-            if (notice->idFrom == 610 && notice->code == LVN_ITEMCHANGED) EnableWindow(GetDlgItem(window_, 221), ListView_GetNextItem(recordings_, -1, LVNI_SELECTED) >= 0);
             if (notice->idFrom == 610 && notice->code == LVN_KEYDOWN && reinterpret_cast<NMLVKEYDOWN*>(lparam)->wVKey == VK_F2) { PostMessageW(window_, WM_COMMAND, 221, 0); return 0; }
             if (notice->idFrom == 610 && notice->code == NM_DBLCLK) command(211);
+            if (notice->idFrom == 600 && notice->code == NM_DBLCLK) { switchPage(2); SendMessageW(logFilter_, CB_SETCURSEL, 1, 0); refreshLogs(true); }
             if (notice->idFrom == 620 && notice->code == LVN_ITEMCHANGED) {
                 const int selected = ListView_GetNextItem(diagnostics_, -1, LVNI_SELECTED);
                 if (selected >= 0 && selected < static_cast<int>(visibleLogs_.size())) {
@@ -1265,11 +1489,14 @@ private:
             }
             return 0;
         }
+        case WM_CONTEXTMENU:
+            if (reinterpret_cast<HWND>(wparam) == recordings_) { recordingContextMenu(lparam); return 0; }
+            break;
         case WM_HSCROLL:
             if (reinterpret_cast<HWND>(lparam) == playerSeek_) {
                 const int code = LOWORD(wparam);
                 seeking_ = code == TB_THUMBTRACK;
-                if (code != TB_THUMBTRACK) { const LRESULT position = SendMessageW(playerSeek_, TBM_GETPOS, 0, 0); player_.seek(static_cast<DWORD>(static_cast<uint64_t>(player_.length()) * position / 1000), true); updatePlayer(); }
+                if (code != TB_THUMBTRACK) { const LRESULT position = SendMessageW(playerSeek_, TBM_GETPOS, 0, 0); if (!player_.seek(static_cast<DWORD>(static_cast<uint64_t>(player_.length()) * position / 1000), true)) showPlayerError(); else updatePlayer(); }
                 return 0;
             }
             break;
@@ -1282,12 +1509,14 @@ private:
             }
             const auto state = diagnosticSnapshot();
             const int sessions = static_cast<int>(g_sessionCount.load()), recordings = g_activeRecordings.load();
-            if (state.changedAt != lastChanged_ || sessions != lastSessions_ || recordings != lastActive_) { lastChanged_ = state.changedAt; lastSessions_ = sessions; lastActive_ = recordings; InvalidateRect(window_, NULL, FALSE); EnableWindow(GetDlgItem(window_, 503), !state.callActive && sessions == 0 && !state.busy && !g_offline); }
+            if (state.changedAt != lastChanged_ || sessions != lastSessions_ || recordings != lastActive_) { lastChanged_ = state.changedAt; lastSessions_ = sessions; lastActive_ = recordings; InvalidateRect(window_, NULL, FALSE); }
             const auto inspection = compatibilitySnapshot();
             EnableWindow(GetDlgItem(window_, 804), !state.busy && !state.callActive && sessions == 0 && inspection.verdict != "running");
             EnableWindow(GetDlgItem(window_, 423), !state.busy && !state.callActive && sessions == 0 && inspection.verdict != "running");
+            EnableWindow(GetDlgItem(window_, 502), !state.busy && !state.callActive && sessions == 0 && inspection.verdict != "running");
             EnableWindow(GetDlgItem(window_, 805), inspection.verdict != "idle" && inspection.verdict != "running");
             if (page_ == 4 && SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5 && (inspection.revision != lastCompatRevision_ || compatibilityRuntimeVerified(inspection, state, sessions) != lastCompatRuntime_)) refreshHelp();
+            if (lastAddressRevision_ != g_phoneAddressRevision.load()) refreshAddressStatus();
             updatePlayer(); refreshLogs(false); refreshUpdates(); refreshPhoneSetup();
             if (state.files != lastFiles_) { lastFiles_ = state.files; if (page_ == 1) refreshRecordings(true); }
             return 0;
@@ -1363,7 +1592,16 @@ private:
     /// Column keys allow headers to change language while preserving selected rows and search drafts.
     std::map<HWND, std::vector<string>> columnKeys_;
     /// Settings inputs and associated resource-backed labels.
+    /// Connection-mode controls preserve the selected mode and both identity drafts independently.
+    unsigned lastAddressRevision_ = 0;
+    HWND addressStatus_ = NULL;
+    HWND addressModeLabel_ = NULL, addressModeChoice_ = NULL, addressIdentityLabel_ = NULL, addressMac_ = NULL;
     HWND fields_[11]{}, fieldLabels_[11]{}, settingNote_ = NULL;
+    /// View-only category and read-only local-address summary; underlying edit controls retain their values.
+    int settingsGroup_ = 0;
+    HWND basicIpSummary_ = NULL;
+    /// Storage policy drafts and side-effect-free destination preview.
+    HWND storageMode_ = NULL, storagePattern_ = NULL, storagePreview_ = NULL;
     /// Stable recording snapshots for row actions and filtering.
     std::vector<CallItem> calls_, visibleCalls_;
     /// Bounded visible log snapshot, keeping the selected sequence stable.

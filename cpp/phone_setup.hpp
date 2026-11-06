@@ -127,7 +127,7 @@ static bool setupSame(const std::map<string, string>& left, const std::map<strin
 /// Retarget an empty or recognized recording callback; refuse unrelated company actions.
 static bool setupCallback(const string& original, const char* event, string& target) {
     const string base = "http://" + g_cfg.advertiseIp + ":" + std::to_string(g_cfg.hookPort);
-    if (trim(original).empty()) { target = base + "/event?ev=" + event; return true; }
+    if (trim(original).empty()) { target = base + "/event?ev=" + event; if (g_cfg.phoneAddressMode == "dhcp") target += "&pair=" + phonePairingToken(); return true; }
     const string source = trim(original); const size_t slash = source.find('/', 7);
     if (toLower(source.substr(0, 7)) != "http://" || slash == string::npos) return false;
     const string authority = source.substr(7, slash - 7); const size_t colon = authority.find(':');
@@ -137,7 +137,7 @@ static bool setupCallback(const string& original, const char* event, string& tar
     // Match only the recording event contract; retain all existing macro parameters.
     const string suffix = source.substr(slash);
     if (suffix.compare(0, 7, "/event?") != 0) return false;
-    bool matches = false; size_t first = 7;
+    bool matches = false; size_t first = 7; string retained;
     while (first < suffix.size()) {
         const size_t end = suffix.find('&', first); const string pair = suffix.substr(first, end == string::npos ? string::npos : end - first);
         const size_t equal = pair.find('=');
@@ -146,16 +146,19 @@ static bool setupCallback(const string& original, const char* event, string& tar
             const bool correct = value == event || (string(event) == "est" && value == "established") || (string(event) == "end" && value == "terminated");
             if (!correct || matches) return false; matches = true;
         }
+        if (pair.substr(0, equal) != "pair") { if (!retained.empty()) retained += '&'; retained += pair; }
         if (end == string::npos) break; first = end + 1;
     }
-    if (!matches) return false; target = base + suffix; return true;
+    if (!matches) return false; target = base + "/event?" + retained;
+    if (g_cfg.phoneAddressMode == "dhcp") target += "&pair=" + phonePairingToken();
+    return true;
 }
 
 /// Protect a complete pre-write snapshot before changing either phone page.
 static string setupSaveBackup(const SetupForm& record, const SetupForm& actions) {
     const string folder = "phone-setup-backups";
     if (!ensureDir(folder)) return "";
-    const string data = "PhoneRecordSetup1\n" + g_cfg.phoneIp + ":" + std::to_string(g_cfg.phonePort) + "\n" +
+    const string data = "PhoneRecordSetup1\n" + phoneAddress() + ":" + std::to_string(g_cfg.phonePort) + "\n" +
         setupEncode(record.values) + "\n" + setupSubmission(record, "/record.htm") + "\n" +
         setupEncode(actions.values) + "\n" + setupSubmission(actions, "/action.htm") + "\n";
     string encrypted; if (!protectLocalSecret(data, encrypted)) return "";

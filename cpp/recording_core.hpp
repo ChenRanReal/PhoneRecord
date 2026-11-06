@@ -102,7 +102,7 @@ private:
                 if (sourceIp != controlPeer_) { ++invalid_; continue; }
                 peer_ = source;
                 peerLocked_ = true;
-                provenance_ = sourceIp == g_cfg.phoneIp && sourceIp != "127.0.0.1" ? "configured_phone" : "test_or_other_peer";
+                provenance_ = sourceIp == phoneAddress() && sourceIp != "127.0.0.1" ? "configured_phone" : "test_or_other_peer";
                 LOGI("RTP_FIRST session=%s source=%s:%u pt=%d payload=%d elapsed_ms=%llu provenance=%s",
                      tag_.c_str(), sourceIp.c_str(), ntohs(source.sin_port), rtp.payloadType, rtp.payloadSize,
                      now - started, provenance_.c_str());
@@ -177,14 +177,17 @@ private:
 
     /// Create a collision-resistant WAV name while retaining the existing list filename convention.
     bool openOutput() {
-        if (!ensureDir(g_cfg.recordDir)) { LOGE("RECORD_DIR_CREATE_FAILED win32=%lu", GetLastError()); return false; }
-        string base = nowStamp("%Y%m%d-%H%M%S") + "_" + safeFileName(localNumber_) + "_" +
+        string subfolder;
+        if (!recordingSubfolder(g_cfg.recordFolderMode, g_cfg.recordFolderPattern, startedLocal_, subfolder)) { LOGE("RECORD_FOLDER_INVALID"); return false; }
+        if (!ensureRecordingSubfolder(g_cfg.recordDir, subfolder)) { LOGE("RECORD_DIR_CREATE_FAILED win32=%lu", GetLastError()); return false; }
+        string base = recordingTimestamp(startedLocal_, true) + "_" + safeFileName(localNumber_) + "_" +
                       safeFileName(remoteNumber_) + "_" + safeFileName(direction_);
         if (!name_.empty()) base += "_" + safeFileName(name_);
         base += "_" + tag_;
-        path_ = g_cfg.recordDir + "\\" + base + ".wav";
+        const string relative = (subfolder.empty() ? "" : subfolder + "\\") + base + ".wav";
+        path_ = g_cfg.recordDir + "\\" + relative;
         if (!wav_.open(path_)) return false;
-        fileName_ = base + ".wav";
+        fileName_ = relative;
         diagnosticUpdate([&](DiagnosticSnapshot& state) { if (state.sessionTag == tag_) { state.attemptWav = true; state.stage = RecordingStage::File; state.code = "WAV_OPENED"; } });
         LOGI("WAV_OPENED session=%s udp=%d", tag_.c_str(), port_);
         if (g_uiRecordStart) g_uiRecordStart(name_, remoteNumber_);
@@ -290,7 +293,9 @@ private:
     /// Clock evidence only; this change never inserts, drops or rewrites PCM samples.
     uint64_t timestampDiscontinuities_ = 0, timestampGapSamples_ = 0, timestampOverlapOrReset_ = 0, ssrcChanges_ = 0;
     /// Wall clock at session allocation for the existing ledger.
-    string startedAt_ = nowStamp();
+    /// Calendar identity is fixed at session creation, never at stop or finalization.
+    SYSTEMTIME startedLocal_ = recordingLocalTime();
+    string startedAt_ = recordingTimestamp(startedLocal_);
     /// Protect the externally requested stop reason.
     std::mutex reasonMutex_;
     /// Stable completion reason; never contains remote user input.

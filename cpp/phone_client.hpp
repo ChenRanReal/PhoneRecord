@@ -10,6 +10,13 @@ public:
         std::lock_guard<std::mutex> guard(mutex_);
         if (g_offline) { LOGI("AUTH_SKIPPED offline=true"); return false; }
         readyObserved_ = 0;
+        if (phoneAddress().empty()) return authFailure("PHONE_ADDRESS_UNRESOLVED");
+        if (g_cfg.phoneAddressMode == "dhcp" && !phonePaired()) {
+            PhoneSubnet subnet;
+            const bool local = phoneSubnet(phoneAddress(), subnet);
+            LOGI("PHONE_INITIAL_ROUTE on_link=%d", local);
+            if (local && !verifyPhoneMac(phoneAddress())) return authFailure("PHONE_IDENTITY_MISMATCH");
+        }
         if (g_cfg.secretError) return authFailure("CREDENTIAL_DECRYPT_FAILED");
         loadCookie();
         string head, body;
@@ -157,6 +164,13 @@ public:
             if (established == actions.end() || ended == actions.end()) { add("callbacks", "pending", "callbacks_missing"); done("unsupported"); return; }
             const bool est = compatibleCallback(established->second, "est"), end = compatibleCallback(ended->second, "end");
             callbacks = est && end;
+            if (g_cfg.phoneAddressMode == "dhcp") {
+                const auto ready = actions.find("AURL_SetupCompleted_RW"), changed = actions.find("AURL_IpChange_RW");
+                const bool tracking = phonePaired() && ready != actions.end() && changed != actions.end() &&
+                    compatibleCallback(ready->second, "ready") && compatibleCallback(changed->second, "ip");
+                callbacks = callbacks && tracking;
+                add("address_callbacks", tracking ? "pass" : "fail", tracking ? "callback_ok" : "pairing_fix");
+            }
             add("established", est ? "pass" : "fail", est ? "callback_ok" : "callback_fix");
             add("terminated", end ? "pass" : "fail", end ? "callback_ok" : "callback_fix");
         }
@@ -246,6 +260,7 @@ private:
 
     /// Read a credential cache, accepting the established plaintext format for migration.
     void loadCookie() {
+        if (g_cfg.phoneAddressMode != "fixed") return;
         std::ifstream input(".phone_cookie", std::ios::binary);
         char buffer[8193]; input.read(buffer, sizeof(buffer));
         const size_t length = static_cast<size_t>(input.gcount());
@@ -257,6 +272,7 @@ private:
 
     /// Persist a validated cookie using account-bound Windows encryption.
     void saveCookie() {
+        if (g_cfg.phoneAddressMode != "fixed") return;
         string encoded;
         if (!protectLocalSecret(cookie_, encoded)) { LOGW("COOKIE_SAVE_FAILED encrypt=true"); return; }
         std::ofstream output(".phone_cookie", std::ios::binary | std::ios::trunc);
@@ -317,6 +333,9 @@ private:
         head.clear(); content.clear();
         requestDeferred_ = false;
         if (g_offline || g_stopping) return false;
+        const string target = phoneAddress();
+        if (target.empty()) { LOGW("PHONE_ADDRESS_UNRESOLVED"); return false; }
+        if (target != endpoint_) { if (!endpoint_.empty()) cookie_.clear(); readyObserved_ = 0; endpoint_ = target; }
         if (lastCompleted_ != std::chrono::steady_clock::time_point{})
             std::this_thread::sleep_until(lastCompleted_ + std::chrono::milliseconds(1100));
         if (idleOnly && (diagnosticSnapshot().callActive || g_sessionCount > 0)) { requestDeferred_ = true; return false; }
@@ -332,7 +351,7 @@ private:
         if (connection == INVALID_SOCKET) return false;
         u_long nonblocking = 1; ioctlsocket(connection, FIONBIO, &nonblocking);
         sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(static_cast<u_short>(g_cfg.phonePort));
-        InetPtonA(AF_INET, g_cfg.phoneIp.c_str(), &address.sin_addr);
+        InetPtonA(AF_INET, target.c_str(), &address.sin_addr);
         int connected = connect(connection, reinterpret_cast<sockaddr*>(&address), sizeof(address));
         if (connected != 0 && WSAGetLastError() == WSAEWOULDBLOCK) {
             fd_set writable, errors; FD_ZERO(&writable); FD_ZERO(&errors); FD_SET(connection, &writable); FD_SET(connection, &errors);
@@ -342,12 +361,12 @@ private:
             if (connected > 0) getsockopt(connection, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length);
             connected = connected > 0 && !error ? 0 : SOCKET_ERROR;
         }
-        if (connected != 0) { LOGE("HTTP_CONNECT_FAILED target=%s:%d", g_cfg.phoneIp.c_str(), g_cfg.phonePort); closesocket(connection); return false; }
+        if (connected != 0) { LOGE("HTTP_CONNECT_FAILED target=%s:%d", target.c_str(), g_cfg.phonePort); closesocket(connection); return false; }
         if (idleOnly && (diagnosticSnapshot().callActive || g_sessionCount > 0)) { requestDeferred_ = true; closesocket(connection); return false; }
         std::ostringstream request;
-        request << method << ' ' << path << " HTTP/1.1\r\nHost: " << g_cfg.phoneIp << "\r\nUser-Agent: Mozilla/5.0\r\n";
+        request << method << ' ' << path << " HTTP/1.1\r\nHost: " << target << "\r\nUser-Agent: Mozilla/5.0\r\n";
         if (!body.empty()) request << "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " << body.size() << "\r\n";
-        request << "Referer: http://" << g_cfg.phoneIp << path << "\r\n";
+        request << "Referer: http://" << target << path << "\r\n";
         if (!cookie_.empty()) request << "Cookie: auth=" << cookie_ << "\r\n";
         request << "Connection: close\r\n\r\n" << body;
         const string payload = request.str();
@@ -384,6 +403,8 @@ private:
 
     /// Current authentication cookie; never included in diagnostic exports.
     string cookie_;
+    /// Bind in-memory authentication and readiness to one resolved target.
+    string endpoint_;
     /// Most recent action observed authentication expiry.
     bool stale_ = false;
     /// Monotonic time of the last protected-page idle state, invalidated by all actions.

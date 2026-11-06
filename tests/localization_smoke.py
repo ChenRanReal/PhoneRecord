@@ -75,10 +75,11 @@ def main() -> int:
     """Verify real native labels, input behavior, field help, language persistence and live sessions."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--exe", type=pathlib.Path, default=BASE / "cpp/PhoneRecord.exe")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    exe = BASE / "cpp/PhoneRecord.exe"
+    exe = args.exe.resolve(strict=True)
     count = resources()
     checks = []
     with tempfile.TemporaryDirectory(prefix="PhoneRecord-localization-") as temporary:

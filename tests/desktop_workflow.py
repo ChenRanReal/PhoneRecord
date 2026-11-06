@@ -100,10 +100,11 @@ def main() -> int:
     """Exercise metadata, playback, health recovery, scrolling, close preferences and scheduling."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--exe", type=pathlib.Path, default=BASE / "cpp" / "PhoneRecord.exe")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    exe = BASE / "cpp" / "PhoneRecord.exe"
+    exe = args.exe.resolve(strict=True)
     checks = []
     with tempfile.TemporaryDirectory(prefix="PhoneRecord-workflow-") as temporary:
         root = pathlib.Path(temporary)
@@ -162,8 +163,26 @@ def main() -> int:
             preview(window, output, "internal_player", 1)
             checks.append("silent native WAV playback, pause, resume, seek, natural end and rewind without external player")
 
-            for _ in range(30):
-                health(app)
+            broken = folder / names[0]
+            broken.write_bytes(broken.read_bytes()[:44])
+            select_row(listing, 0)
+            for language, expected in enumerate(("录音文件不完整", "錄音檔不完整", "The recording is incomplete")):
+                USER.SendMessageW(USER.GetDlgItem(window, 430), 0x014E, language, 0)
+                USER.SendMessageW(window, 0x0111, (1 << 16) | 430, USER.GetDlgItem(window, 430))
+                USER.PostMessageW(window, 0x0111, 211, 0)
+                dismiss_dialog(app.process.pid, "PLAYBACK_FAILED operation=format")
+                assert expected in title(USER.GetDlgItem(window, 219))
+                assert USER.GetWindowLongW(USER.GetDlgItem(window, 216), -16) & 0x08000000
+            wav(broken)
+            before_plays = app.log().count("PLAYBACK_PLAY")
+            USER.PostMessageW(window, 0x0111, 211, 0)
+            wait_for(lambda: app.log().count("PLAYBACK_PLAY") > before_plays)
+            USER.SendMessageW(window, 0x0111, 217, 0)
+            checks.append("three-language file errors retain operation details, disable failed sessions and allow repaired-file retry")
+
+            USER.SendMessageW(window, 0x0111, 100, 0)
+            for index in range(30):
+                assert http_get(app.event, f"/event?ev=synthetic-unknown-{index}")[0] == 400
             time.sleep(.7)
             recent = USER.GetDlgItem(window, 600)
             count = USER.SendMessageW(recent, 0x1004, 0, 0)
@@ -176,13 +195,16 @@ def main() -> int:
             old_top = USER.SendMessageW(recent, 0x1027, 0, 0)
             old_text = cell(app.process.pid, recent, old_top, 0) + cell(app.process.pid, recent, old_top, 2)
             for _ in range(5):
-                health(app)
+                assert http_get(app.event, "/event?ev=synthetic-unknown-paused")[0] == 400
             time.sleep(.4)
             new_top = USER.SendMessageW(recent, 0x1027, 0, 0)
-            assert cell(app.process.pid, recent, new_top, 0) + cell(app.process.pid, recent, new_top, 2) == old_text
-            checks.append("recent events follow the newest row and preserve the reading position when paused")
+            new_text = cell(app.process.pid, recent, new_top, 0) + cell(app.process.pid, recent, new_top, 2)
+            assert new_text == old_text, (old_top, new_top, old_text, new_text)
+            assert all(cell(app.process.pid, recent, index, 1) in ("WARN", "ERROR") for index in range(count))
+            checks.append("recent issues exclude routine events, follow the newest issue and preserve the reading position when paused")
 
             USER.SendMessageW(window, 0x0111, 103, 0)
+            USER.SendMessageW(window, 0x0111, 434, 0)
             assert USER.SendMessageW(USER.GetDlgItem(window, 411), 0x0147, 0, 0) == 0
             USER.SendMessageW(USER.GetDlgItem(window, 411), 0x014E, 2, 0)
             USER.SendMessageW(USER.GetDlgItem(window, 412), 0x014E, 0, 0)

@@ -91,7 +91,7 @@ def minimum_layout(window):
         gdi.SelectObject.restype = w.HANDLE
         gdi.GetTextExtentPoint32W.argtypes = [w.HDC, w.LPCWSTR, ctypes.c_int, ctypes.POINTER(w.SIZE)]
         positions = []
-        for control in (211, 221, 212, 213, 214, 215):
+        for control in (211, 214):
             child = USER.GetDlgItem(window, control)
             bounds, extent = w.RECT(), w.SIZE()
             USER.GetWindowRect(child, ctypes.byref(bounds))
@@ -119,11 +119,13 @@ def main() -> int:
     """Exercise rename, cancellation, validation, stale/error safety, persistence, search and reset."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=pathlib.Path, required=True)
-    output = parser.parse_args().output.resolve()
+    parser.add_argument("--exe", type=pathlib.Path, default=BASE / "cpp/PhoneRecord.exe")
+    args = parser.parse_args()
+    output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     checks = []
     with tempfile.TemporaryDirectory(prefix="PhoneRecord title 測試 ") as temporary:
-        app = App(pathlib.Path(temporary), BASE / "cpp/PhoneRecord.exe", output, "titles", gui=True)
+        app = App(pathlib.Path(temporary), args.exe.resolve(), output, "titles", gui=True)
         app.args[app.args.index("--run-for") + 1] = "180"
         app.args += ["--capture-dir", str(output)]
         directory = app.root / "recordings"
@@ -147,9 +149,9 @@ def main() -> int:
             USER.SendMessageW(window, 0x0111, 101, 0)
             listing = USER.GetDlgItem(window, 610)
             assert USER.SendMessageW(listing, 0x1004, 0, 0) == 2
-            assert not USER.IsWindowEnabled(USER.GetDlgItem(window, 221))
+            assert not USER.GetDlgItem(window, 221)
             select_row(listing, 0)
-            assert USER.IsWindowEnabled(USER.GetDlgItem(window, 221))
+            assert USER.SendMessageW(listing, 0x1032, 0, 0) == 1
             assert cell(app.process.pid, listing, 0, 1) == "Original 2"
             contact = cell(app.process.pid, listing, 0, 3)
             checks.append("default title and original contact remain separate; rename requires a selected stable recording")
@@ -229,7 +231,7 @@ def main() -> int:
                 assert "120" in title(USER.GetDlgItem(dialog, 1104))
                 close_editor(dialog)
                 capture_page(window, output, f"rename_language_{language}", 1)
-            checks.append("all three native editors and the complete recording toolbar fit the minimum window at the real monitor DPI")
+            checks.append("all three native editors and the compact recording toolbar fit the minimum window at the real monitor DPI")
 
         with app:
             window = main_window(app)
@@ -255,7 +257,7 @@ def main() -> int:
         assert preserved(originals) == original
         checks.append("Restore default removes only the title sidecar; clean shutdown cancels an open draft; original history is retained and logs exclude title text")
     result = {"passed": True, "synthetic_only": True, "real_phone_contacted": False,
-              "exe_sha256": hashlib.sha256((BASE / "cpp/PhoneRecord.exe").read_bytes()).hexdigest(), "checks": checks}
+              "exe_sha256": hashlib.sha256(args.exe.resolve().read_bytes()).hexdigest(), "checks": checks}
     (output / "title_results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
     return 0

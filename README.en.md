@@ -23,7 +23,7 @@ The optional [config.example.ini](cpp/config.example.ini) is a blank template. D
 The lower left switches among 简体中文, 繁體中文, and English. Complete offline help is built in, including first-time setup, what each field is for, and the phone-side counterpart.
 After connection settings are saved, use **Exit** at the lower left and reopen the program. The **X** at the upper right only minimizes to the tray by default.
 
-If the login check passes but a connected call is not recorded, read [話機自動設定](docs/話機自動設定.md) first (Chinese). The phone still needs Network recording, a recording destination, and two call callbacks; the new version can generate the script itself.
+If the login check passes but a connected call is not recorded, read [話機自動設定](docs/話機自動設定.md) first (Chinese). The phone still needs Network recording, a recording destination, and two call callbacks; choose Settings → Configure phone to apply these settings.
 
 ## Main features
 
@@ -57,7 +57,7 @@ Every address is filled in by the user. Changing the event port requires updatin
 - [Operation, every field, and device capability](docs/操作與機型適配.md) (Chinese)
 - [Use and troubleshooting](docs/PhoneRecord_使用與排查.md) (Chinese)
 - [C++ build and modules](cpp/README.md) (Chinese)
-- [Phone setup script and failure diagnosis](docs/話機自動設定.md) (Chinese)
+- [Phone setup and failure diagnosis](docs/話機自動設定.md) (Chinese)
 - [Historical call titles and backup](docs/歷史通話命名.md) (Chinese)
 - [Development, verification, and the optional Python edition](docs/開發與驗證.md) (Chinese)
 - [Apache-2.0 license](LICENSE)

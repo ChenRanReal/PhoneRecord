@@ -20,6 +20,8 @@ static const wchar_t* uiText(const char* key) {
 
 /// Map stable diagnostic codes to actionable operator guidance in the existing locale.
 static const wchar_t* diagnosticHint(const string& code) {
+    if (code == "PHONE_ADDRESS_UNRESOLVED" || code == "PHONE_PAIRING_SAVE_FAILED" || code == "PHONE_ADDRESS_DEFERRED" || code == "PHONE_IDENTITY_MISMATCH") return uiText("address.unresolved");
+    if (code == "PLAYBACK_FAILED" || code == "PLAYBACK_CLEANUP_FAILED") return uiText("message.player_device");
     if (code == "CALL_TITLE_READ_FAILED") return uiText("rename.metadata");
     if (code == "CALL_TITLE_SAVE_FAILED") return uiText("rename.failed");
     if (code == "CALL_TITLE_SAVED") return uiText("rename.help");

@@ -158,17 +158,19 @@ static bool compatibleCallback(const string& value, const char* event) {
     const size_t question = url.find('?', path); if (question == string::npos || url.substr(path, question - path) != "/event") return false;
     const size_t fragment = url.find('#', question);
     const string query = url.substr(question + 1, fragment == string::npos ? string::npos : fragment - question - 1);
+    bool eventMatches = false; string pairing; int pairCount = 0;
     size_t first = 0;
     while (first <= query.size()) {
         const size_t end = query.find('&', first); const string item = query.substr(first, end == string::npos ? string::npos : end - first);
         const size_t equal = item.find('=');
         if (equal != string::npos && (item.substr(0, equal) == "ev" || item.substr(0, equal) == "event")) {
             const string type = toLower(item.substr(equal + 1));
-            return type == event || (string(event) == "est" && type == "established") || (string(event) == "end" && type == "terminated");
+            eventMatches = type == event || (string(event) == "est" && type == "established") || (string(event) == "end" && type == "terminated");
         }
+        if (equal != string::npos && item.substr(0, equal) == "pair") { pairing = item.substr(equal + 1); ++pairCount; }
         if (end == string::npos) break; first = end + 1;
     }
-    return false;
+    return eventMatches && (g_cfg.phoneAddressMode != "dhcp" || (pairCount == 1 && validPairingToken(pairing) && pairing == phonePairingToken()));
 }
 
 /// Promote only a later completed phone-origin call; synthetic or earlier audio cannot satisfy it.

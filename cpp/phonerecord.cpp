@@ -238,6 +238,8 @@ static bool parseRtp(const uint8_t* data, int size, RtpPacket& out) {
 // ===========================================================================
 
 #include "config_security.hpp"
+#include "phone_address_config.hpp"
+#include "recording_storage.hpp"
 
 /// Immutable runtime configuration; GUI saves a separate validated copy for restart.
 struct Config {
@@ -255,10 +257,18 @@ struct Config {
     int trayNotifications = 0;
     string advertiseIp = "";
     string phoneIp = "";
+    /// Address authority: fixed IPv4, on-link MAC discovery, or managed DNS across subnets.
+    string phoneAddressMode = "fixed";
+    /// Required stable Ethernet identity for same-subnet DHCP discovery.
+    string phoneMac;
     int    phonePort = 80;
     string phoneUser = "";
     string phonePass = "";
     string recordDir = "recordings";
+    /// Folder policy for new recordings; old files remain discoverable under the same root.
+    string recordFolderMode = "flat";
+    /// Relative calendar template retained when a preset is selected.
+    string recordFolderPattern = "{yyyy}/{MM}/{dd}";
     string ledgerFile = "recordings\\calls.csv";
     string directoryFile = "directory.json";
     /// Failed credential decryption must not masquerade as a wrong phone password.
@@ -295,12 +305,16 @@ struct Config {
             else if (key == "close_action") closeAction = val;
             else if (key == "tray_notifications") trayNotifications = configurationInteger(val);
             else if (key == "advertise_ip")   advertiseIp = val;
+            else if (key == "phone_address_mode") phoneAddressMode = (val == "dhcp_local" || val == "dhcp_remote") ? "dhcp" : val;
+            else if (key == "phone_mac") phoneMac = val;
             else if (key == "phone_ip")       phoneIp = val;
             else if (key == "phone_port")     phonePort = configurationInteger(val);
             else if (key == "phone_user")     phoneUser = val;
             else if (key == "phone_pass")     phonePass = val;
             else if (key == "phone_pass_dpapi") secretError = !unprotectLocalSecret(val, phonePass);
             else if (key == "record_dir")     recordDir = val;
+            else if (key == "record_folder_mode") recordFolderMode = val;
+            else if (key == "record_folder_pattern") recordFolderPattern = val;
             else if (key == "ledger_file")    ledgerFile = val;
             else if (key == "directory_file") directoryFile = val;
             else extra[key] = val;
@@ -310,10 +324,15 @@ struct Config {
     /// Return stable field names for invalid settings without including credentials.
     std::vector<string> errors() const {
         std::vector<string> result;
+        if (phoneAddressMode != "fixed" && phoneAddressMode != "dhcp") result.push_back("phone_address_mode");
         if (!validIpv4(phoneIp)) result.push_back("phone_ip");
+        if (phoneAddressMode == "dhcp" && normalizePhoneMac(phoneMac).empty()) result.push_back("phone_mac");
+        if (phoneIp.find_first_of("\r\n") != string::npos) result.push_back("phone_ip");
+        if (phoneMac.find_first_of("\r\n") != string::npos) result.push_back("phone_mac");
         if (!validIpv4(advertiseIp)) result.push_back("advertise_ip");
         if (phonePort < 1 || phonePort > 65535) result.push_back("phone_port");
         if (controlPort < 1 || controlPort > 65535) result.push_back("control_port");
+        if (phoneAddressMode == "dhcp" && hookPort == 0) result.push_back("hook_port");
         if (hookPort < 0 || hookPort > 65535 || hookPort == controlPort) result.push_back("hook_port");
         if (udpPortStart < 1 || udpPortEnd > 65535 || udpPortEnd < udpPortStart || udpPortEnd - udpPortStart > 1000)
             result.push_back("udp_port_range");
@@ -322,6 +341,10 @@ struct Config {
         if (closeAction != "tray" && closeAction != "minimize" && closeAction != "exit") result.push_back("close_action");
         if (idleTimeoutSec < 2 || idleTimeoutSec > 120) result.push_back("idle_timeout");
         if (recordDir.empty() || recordDir.find_first_of("\r\n") != string::npos) result.push_back("record_dir");
+        string recordingFolder;
+        if (recordFolderMode != "flat" && recordFolderMode != "daily" && recordFolderMode != "weekly" && recordFolderMode != "custom") result.push_back("record_folder_mode");
+        else if (!recordingSubfolder(recordFolderMode, recordFolderPattern, recordingLocalTime(), recordingFolder)) result.push_back("record_folder_pattern");
+        if (recordFolderPattern.find_first_of("\r\n") != string::npos) result.push_back("record_folder_pattern");
         if (phoneUser.empty() || phoneUser.find_first_of("\r\n") != string::npos) result.push_back("phone_user");
         if (secretError) result.push_back("phone_pass_dpapi");
         if (formatError) result.push_back("flat_config_required");
@@ -331,8 +354,11 @@ struct Config {
 
 
 static Config g_cfg;
+
 /// Absolute selected config path; settings save back to this exact file.
 static wstring g_configPath = L"config.ini";
+
+#include "phone_address.hpp"
 
 // GUI 回调（由 WinMain 注入，避免录音线程直接依赖界面代码）
 typedef void (*RecordStartFn)(const string& name, const string& number);
@@ -612,21 +638,14 @@ static std::vector<CallItem> scanRecordings() {
     for (int rows = 0; rows < 100000 && readLedgerRow(records, record); ++rows)
         if (record.size() == 9 && record[7].size() >= 4 && record[7].substr(record[7].size() - 4) == ".wav") ledger[record[7]] = record;
 
-    string pattern = g_cfg.recordDir + "\\*.wav";
-    WIN32_FIND_DATAW fd;
-    HANDLE handle = FindFirstFileW(utf8ToWide(pattern).c_str(), &fd);
-    if (handle == INVALID_HANDLE_VALUE) return items;
-
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-
+    for (const auto& file : recordingFiles(g_cfg.recordDir)) {
         CallItem item;
-        item.file = wideToUtf8(fd.cFileName);
-        item.size = ((long long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        item.file = file.relative;
+        item.size = file.size;
         item.duration = (int)((item.size - 44) / 16000);
         if (item.duration < 0) item.duration = 0;
 
-        string stem = item.file;
+        string stem = item.file.substr(item.file.find_last_of("\\/") == string::npos ? 0 : item.file.find_last_of("\\/") + 1);
         size_t dot = stem.rfind('.');
         if (dot != string::npos) stem = stem.substr(0, dot);
 
@@ -672,11 +691,11 @@ static std::vector<CallItem> scanRecordings() {
         if (!title.error) item.title = wideToUtf8(title.value);
         else LOGW("CALL_TITLE_READ_FAILED file_id=%s win32=%lu", sessionFingerprint(item.file).c_str(), title.error);
         items.push_back(item);
-    } while (FindNextFileW(handle, &fd));
-
-    FindClose(handle);
+    }
 
     std::sort(items.begin(), items.end(), [](const CallItem& a, const CallItem& b) {
+        if (a.date != b.date) return a.date > b.date;
+        if (a.clock != b.clock) return a.clock > b.clock;
         return a.file > b.file;  // 文件名含时间戳，倒序即最新在前
     });
     return items;
@@ -695,6 +714,7 @@ static string durationText(const CallItem& item) {
     return buf;
 }
 
+/// Reveal a root-relative recording, including its date subfolder.
 static void revealFile(const string& fileName) {
     string path = g_cfg.recordDir + "\\" + fileName;
     wstring cmdline = L"explorer.exe /select,\"" + utf8ToWide(path) + L"\"";

@@ -9,11 +9,26 @@ public:
     /// Validate a complete phone PCM WAV and adopt one independent waveform output device.
     bool open(const string& path, HWND) {
         close();
+        errorKey_ = "message.player_failed"; errorOperation_.clear(); errorResult_ = MMSYSERR_NOERROR;
         input_.open(utf8ToWide(path), std::ios::binary);
-        if (!readFormat()) { LOGW("PLAYBACK_FAILED operation=format expected=PCM_8000_mono_16 complete_file_required=true"); close(); return false; }
+        if (!input_.is_open()) { fail("message.player_file", "file"); close(); return false; }
+        if (!readFormat()) { fail("message.player_invalid", "format"); close(); return false; }
         WAVEFORMATEX format{}; format.wFormatTag = WAVE_FORMAT_PCM; format.nChannels = 1;
         format.nSamplesPerSec = 8000; format.nAvgBytesPerSec = 16000; format.nBlockAlign = 2; format.wBitsPerSample = 16;
-        if (!success(waveOutOpen(&device_, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL), "open")) { device_ = NULL; close(); return false; }
+        MMRESULT result = waveOutOpen(&device_, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL);
+        if (result == MMSYSERR_BADDEVICEID) {
+            // A stale/missing default mapping can coexist with working endpoints on a new PC.
+            // Retry only this observed error, with a bounded scan of currently enumerated devices.
+            const UINT devices = std::min<UINT>(waveOutGetNumDevs(), 32);
+            for (UINT id = 0; id < devices; ++id) {
+                device_ = NULL;
+                const MMRESULT candidate = waveOutOpen(&device_, id, &format, 0, 0, CALLBACK_NULL);
+                LOGI("PLAYBACK_DEVICE_ATTEMPT device_id=%u mm_result=%u mapper_mm_result=%u", id, candidate, MMSYSERR_BADDEVICEID);
+                if (candidate == MMSYSERR_NOERROR) { result = candidate; LOGI("PLAYBACK_DEVICE_FALLBACK device_id=%u mapper_mm_result=%u", id, MMSYSERR_BADDEVICEID); break; }
+                if (candidate != MMSYSERR_BADDEVICEID && candidate != MMSYSERR_NODRIVER) result = candidate;
+            }
+        }
+        if (!success(result, "open")) { device_ = NULL; close(); return false; }
         if (!success(waveOutPause(device_), "pause")) { close(); return false; }
         for (auto& buffer : buffers_) {
             buffer.header = {}; buffer.header.lpData = buffer.data; buffer.header.dwBufferLength = sizeof(buffer.data);
@@ -21,7 +36,7 @@ public:
         }
         path_ = path; nextByte_ = baseByte_ = 0;
         input_.clear(); input_.seekg(dataOffset_);
-        LOGI("PLAYBACK_OPENED duration_ms=%lu internal=true backend=waveout", length());
+        LOGI("PLAYBACK_OPENED duration_ms=%lu internal=true backend=waveout output_rate=%lu output_channels=%u", length(), format.nSamplesPerSec, format.nChannels);
         return true;
     }
 
@@ -70,7 +85,7 @@ public:
             if (buffer.queued && (buffer.header.dwFlags & WHDR_DONE)) buffer.queued = false;
             if (!buffer.queued && nextByte_ < dataBytes_) {
                 const DWORD count = std::min<DWORD>(sizeof(buffer.data), dataBytes_ - nextByte_);
-                if (!input_.read(buffer.data, count)) { LOGW("PLAYBACK_FAILED operation=read truncated=true"); waveOutReset(device_); playing_ = false; return false; }
+                if (!input_.read(buffer.data, count)) { fail("message.player_invalid", "read"); waveOutReset(device_); playing_ = false; return false; }
                 buffer.header.dwBufferLength = count;
                 if (!success(waveOutWrite(device_, &buffer.header, sizeof(WAVEHDR)), "write")) { waveOutReset(device_); playing_ = false; return false; }
                 buffer.queued = true; nextByte_ += count;
@@ -113,6 +128,11 @@ public:
     /// Return the loaded path to preserve pause/resume when Play is pressed again.
     const string& path() const { return path_; }
 
+    /// Return a stable resource key for the last failure; cleanup does not overwrite its cause.
+    const char* errorKey() const { return errorKey_; }
+    /// Return private-data-free technical details for a localized operator error dialog.
+    wstring errorDetails() const { return L"PLAYBACK_FAILED operation=" + utf8ToWide(errorOperation_) + L" mm_result=" + std::to_wstring(errorResult_); }
+
 private:
     /// Validate chunk boundaries against the actual file and accept the recorder's PCM contract.
     bool readFormat() {
@@ -137,10 +157,29 @@ private:
         return false;
     }
 
-    /// Log numeric WinMM errors without putting caller details or file paths in technical logs.
-    static bool success(MMRESULT result, const char* operation) { if (result != MMSYSERR_NOERROR) LOGW("PLAYBACK_FAILED operation=%s mm_result=%u", operation, result); return result == MMSYSERR_NOERROR; }
+    /// Retain the actionable cause without exposing caller details or file paths.
+    void fail(const char* key, const char* operation, MMRESULT result = MMSYSERR_NOERROR) {
+        errorKey_ = key; errorOperation_ = operation; errorResult_ = result;
+        LOGW("PLAYBACK_FAILED operation=%s mm_result=%u output_devices=%u reason=%s", operation, result, waveOutGetNumDevs(), key);
+    }
+    /// Classify device errors; cleanup failures are logged without hiding the original failure.
+    bool success(MMRESULT result, const char* operation) {
+        if (result == MMSYSERR_NOERROR) return true;
+        if (!strcmp(operation, "reset_close") || !strcmp(operation, "unprepare") || !strcmp(operation, "close")) {
+            LOGW("PLAYBACK_CLEANUP_FAILED operation=%s mm_result=%u", operation, result); return false;
+        }
+        const char* key = "message.player_device";
+        if (result == MMSYSERR_NODRIVER || result == MMSYSERR_BADDEVICEID || (result == MMSYSERR_ERROR && waveOutGetNumDevs() == 0)) key = "message.player_no_device";
+        else if (result == MMSYSERR_ALLOCATED) key = "message.player_busy";
+        else if (result == WAVERR_BADFORMAT) key = "message.player_format";
+        fail(key, operation, result); return false;
+    }
     /// Stable per-device buffer/header storage, prepared once and reused after WHDR_DONE.
     struct Buffer { WAVEHDR header{}; char data[4096]{}; bool queued = false; } buffers_[4];
+    /// Last actionable error survives close() so the UI can explain failed open attempts.
+    const char* errorKey_ = "message.player_failed";
+    string errorOperation_;
+    MMRESULT errorResult_ = MMSYSERR_NOERROR;
     /// Owned system waveform handle and input stream, used only on the GUI thread.
     HWAVEOUT device_ = NULL;
     std::ifstream input_;

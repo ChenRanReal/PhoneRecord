@@ -22,7 +22,7 @@ static bool writePhoneSetupReport(const wstring& path, const PhoneSetupResult& r
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << "{\"version\":" << jsonQuoted(kProductVersion) << ",\"ok\":" << (result.ok ? "true" : "false")
         << ",\"code\":" << jsonQuoted(result.code) << ",\"message\":" << jsonQuoted(wideToUtf8(uiText(("setup." + result.code).c_str())))
-        << ",\"target\":" << jsonQuoted(g_cfg.phoneIp + ":" + std::to_string(g_cfg.phonePort))
+        << ",\"target\":" << jsonQuoted(phoneAddress() + ":" + std::to_string(g_cfg.phonePort))
         << ",\"cause\":" << jsonQuoted(result.cause) << ",\"cause_message\":" << jsonQuoted(result.cause.empty() ? "" : wideToUtf8(uiText(("setup." + result.cause).c_str())))
         << ",\"plan_id\":" << jsonQuoted(result.planId) << ",\"backup\":" << jsonQuoted(result.backup)
         << ",\"applied\":" << (result.applied ? "true" : "false") << ",\"rollback_attempted\":" << (result.rollbackAttempted ? "true" : "false")

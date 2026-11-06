@@ -117,12 +117,20 @@ private:
                     const int interval = g_healthIntervalSec.load();
                     const ULONGLONG now = GetTickCount64();
                     if (interval != scheduledInterval_) { scheduledInterval_ = interval; nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000; }
-                    if (callActive_ || g_sessionCount > 0 || now - g_lastCallActivity.load() < 20000) continue;
-                    if (automaticCompatibilityPending_) operation = "compatibility";
+                    if (callActive_ || g_sessionCount > 0 || g_pendingCallEvents > 0) continue;
+                    if (g_phonePendingAddress.load()) operation = "track";
                     else {
-                        if (interval <= 0 || now < nextHealth_) continue;
-                        nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000;
-                        operation = "health";
+                        if (now - g_lastCallActivity.load() < 20000) continue;
+                        if (g_phoneAddressRevision.load() != addressRevision_ && !phoneAddress().empty()) {
+                            addressRevision_ = g_phoneAddressRevision.load();
+                            operation = "compatibility"; beginCompatibility();
+                        }
+                        else if (automaticCompatibilityPending_) operation = "compatibility";
+                        else {
+                            if (interval <= 0 || now < nextHealth_) continue;
+                            nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000;
+                            operation = "health";
+                        }
                     }
                 }
                 if (operation == "setup_apply") setupPlan = setupPlan_;
@@ -140,6 +148,7 @@ private:
                 diagnosticUpdate([](DiagnosticSnapshot& state) { state.busy = true; });
             }
             LOGI("OPERATION_BEGIN operation=%s", operation.c_str());
+            const bool targetReady = applyPendingPhoneAddress(operation == "start");
             if (operation == "setup_preview" || operation == "setup_apply") {
                 PhoneSetupResult result;
                 if (diagnosticSnapshot().callActive || g_sessionCount > 0) result.code = "SETUP_PHONE_BUSY";
@@ -149,6 +158,11 @@ private:
                 std::lock_guard<std::mutex> guard(mutex_);
                 setupProgress_.result = std::move(result);
                 setupProgress_.running = false; ++setupProgress_.revision;
+            }
+            else if (operation == "track") {
+                if (targetReady && !g_offline && !diagnosticSnapshot().callActive && g_sessionCount == 0) {
+                    g_phone.login(); g_phone.checkCompatibility(); addressRevision_ = g_phoneAddressRevision.load();
+                }
             }
             else if (operation == "local") runLocalChecks();
             else if (operation == "login") g_phone.login();
@@ -175,7 +189,8 @@ private:
                     else if (operation == "health") diagnosticHealth(true, false, "AUTH_REQUIRED");
                 }
             } else if (operation == "start") {
-                if (!diagnosticSnapshot().controlListening) diagnosticStage(RecordingStage::Failed, "CONTROL_BIND_FAILED");
+                if (!targetReady) diagnosticStage(RecordingStage::Failed, "PHONE_ADDRESS_DEFERRED");
+                else if (!diagnosticSnapshot().controlListening) diagnosticStage(RecordingStage::Failed, "CONTROL_BIND_FAILED");
                 else {
                     if (!diagnosticSnapshot().authenticated && !g_callEnded) g_phone.login();
                     if (!g_callEnded && diagnosticSnapshot().authenticated) g_phone.startRecord();
@@ -208,6 +223,8 @@ private:
     /// Startup inspection awaiting an idle retry after a call; guarded by mutex_.
     bool automaticCompatibilityPending_ = false;
     /// Monotonic idle-check schedule, owned exclusively by the operation thread.
+    /// Last endpoint generation inspected after discovery and the idle quiet period.
+    unsigned addressRevision_ = 0;
     ULONGLONG nextHealth_ = 0;
     int scheduledInterval_ = -1;
 };
@@ -234,26 +251,35 @@ static void hookHandler(HttpRequest& request, HttpResponse& response) {
         response.contentType = "application/json";
         response.body = string("{\"version\":\"") + kProductVersion + "\",\"control\":" + (state.controlListening ? "true" : "false") + ",\"event\":" + (state.eventListening ? "true" : "false") + ",\"offline\":" + (g_offline ? "true" : "false")
             + ",\"call_active\":" + (state.callActive ? "true" : "false") + ",\"active_sessions\":" + std::to_string(g_sessionCount.load())
+            + ",\"address_mode\":" + jsonQuoted(g_cfg.phoneAddressMode) + ",\"address_resolved\":" + (phoneAddress().empty() ? "false" : "true")
             + ",\"local_health\":" + std::to_string(state.localHealth.status) + ",\"phone_health\":" + std::to_string(state.phoneHealth.status)
             + ",\"local_code\":" + jsonQuoted(state.localHealth.code) + ",\"phone_code\":" + jsonQuoted(state.phoneHealth.code) + "}";
         return;
     }
     if (request.path != "/event" || request.method != "GET") { response.status = 404; response.body = "not found"; return; }
-    if (request.sourceIp != g_cfg.phoneIp) { response.status = 403; response.body = "source rejected"; LOGW("EVENT_SOURCE_REJECTED peer=%s", request.sourceIp.c_str()); return; }
     const string event = toLower(request.query["ev"].empty() ? request.query["event"] : request.query["ev"]);
     const bool start = event == "est" || event == "established";
     const bool stop = event == "end" || event == "terminated";
-    if (!start && !stop) { response.status = 400; response.body = "unknown event"; LOGW("EVENT_UNKNOWN_TYPE"); return; }
+    const bool tracking = event == "ready" || event == "ip";
+    if (!start && !stop && !tracking) { response.status = 400; response.body = "unknown event"; LOGW("EVENT_UNKNOWN_TYPE"); return; }
     std::shared_ptr<PendingCallEvent> admission;
-    if (start) {
+    {
         std::lock_guard<std::mutex> guard(g_updateAdmission);
-        if (g_updateInstalling || g_updateStartupPending) { response.status = 503; response.body = "update in progress"; return; }
-        admission = std::make_shared<PendingCallEvent>();
+        const string target = phoneAddress();
+        const bool dhcp = g_cfg.phoneAddressMode == "dhcp";
+        if ((dhcp && !authorizedPhoneCallback(request.query["pair"])) ||
+            (!dhcp && (tracking || target.empty() || request.sourceIp != target))) { response.status = 403; response.body = "source rejected"; LOGW("EVENT_SOURCE_REJECTED"); return; }
+        if (start && (g_updateInstalling || g_updateStartupPending)) { response.status = 503; response.body = "update in progress"; return; }
+        if (start) admission = std::make_shared<PendingCallEvent>();
     }
     diagnosticUpdate([](DiagnosticSnapshot& state) { ++state.events; });
-    LOGI("EVENT_RECEIVED type=%s peer=%s", start ? "established" : "terminated", request.sourceIp.c_str());
+    LOGI("EVENT_RECEIVED type=%s peer=%s", start ? "established" : tracking ? "address" : "terminated", request.sourceIp.c_str());
     response.body = "OK";
-    response.afterSend = [start, admission]() { g_commands.enqueue(start ? "start" : "stop", "phone_event"); };
+    const string source = request.sourceIp;
+    response.afterSend = [start, tracking, source, admission]() {
+        if (g_cfg.phoneAddressMode == "dhcp") stagePhoneAddress(source);
+        g_commands.enqueue(start ? "start" : tracking ? "track" : "stop", "phone_event");
+    };
 }
 
 /// Analyse an existing PCM WAV on explicit request, without altering its audio samples.
@@ -303,12 +329,13 @@ static bool saveConfiguration(const Config& config) {
     const wstring pending = g_configPath + L".pending";
     std::ofstream output(pending, std::ios::binary | std::ios::trunc);
     output << "# PhoneRecord 2 configuration - restart to apply\n"
-           << "phone_ip=" << config.phoneIp << "\nphone_port=" << config.phonePort
+           << "phone_address_mode=" << config.phoneAddressMode << "\nphone_mac=" << config.phoneMac << "\nphone_ip=" << config.phoneIp << "\nphone_port=" << config.phonePort
            << "\nphone_user=" << config.phoneUser << "\nphone_pass_dpapi=" << encrypted
            << "\nadvertise_ip=" << config.advertiseIp << "\ncontrol_port=" << config.controlPort
            << "\nhook_port=" << config.hookPort << "\nui_port=" << config.uiPort
            << "\nudp_port_start=" << config.udpPortStart << "\nudp_port_end=" << config.udpPortEnd
            << "\nidle_timeout=" << config.idleTimeoutSec << "\nrecord_dir=" << config.recordDir
+           << "\nrecord_folder_mode=" << config.recordFolderMode << "\nrecord_folder_pattern=" << config.recordFolderPattern
            << "\nhealth_interval=" << config.healthIntervalSec << "\nclose_action=" << config.closeAction
            << "\ntray_notifications=" << config.trayNotifications
            << "\nledger_file=" << config.ledgerFile << "\ndirectory_file=" << config.directoryFile << "\n";
@@ -356,7 +383,7 @@ static string diagnosticReport() {
     std::ostringstream output;
     output << "PhoneRecord " << kProductVersion << " diagnostic report\nGenerated: " << diagnosticTime()
            << "\nMode: " << (g_offline ? "OFFLINE / SYNTHETIC TEST" : "normal")
-           << "\nPhone: " << g_cfg.phoneIp << ':' << g_cfg.phonePort << "\nAdvertise: " << g_cfg.advertiseIp
+           << "\nPhone: " << phoneAddress() << ':' << g_cfg.phonePort << "\nAdvertise: " << g_cfg.advertiseIp
            << "\nControl port: " << g_cfg.controlPort << " listening=" << state.controlListening
            << "\nEvent port: " << g_cfg.hookPort << " listening=" << state.eventListening
            << "\nUDP range: " << g_cfg.udpPortStart << '-' << g_cfg.udpPortEnd

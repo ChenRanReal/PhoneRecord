@@ -91,6 +91,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) { if (stopSignal) CloseHandle(stopSignal); CloseHandle(singleton); return 2; }
     const bool exists = GetFileAttributesW(g_configPath.c_str()) != INVALID_FILE_ATTRIBUTES;
     g_cfg.load(wideToUtf8(g_configPath));
+    initializePhoneAddress();
     g_healthIntervalSec = g_cfg.healthIntervalSec;
     g_trayNotifications = g_cfg.trayNotifications != 0;
     g_closeAction = g_cfg.closeAction == "exit" ? 2 : g_cfg.closeAction == "minimize" ? 1 : 0;

@@ -85,3 +85,7 @@ venv/
 
 # Local document renders and isolated validation builds.
 /tmp/
+
+# Current-account encrypted phone callback pairing state.
+*.pairing
+*.pairing.pending

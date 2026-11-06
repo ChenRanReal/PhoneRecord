@@ -101,6 +101,7 @@ def verify_layout_at_native_dpi(window):
     gdi.SelectObject.argtypes = [w.HDC, w.HANDLE]
     gdi.SelectObject.restype = w.HANDLE
     gdi.GetTextExtentPoint32W.argtypes = [w.HDC, w.LPCWSTR, ctypes.c_int, ctypes.POINTER(w.SIZE)]
+    USER.SendMessageW(window, 0x0111, 434, 0)
     dpi = USER.GetDpiForWindow(window)
     parent = w.RECT()
     USER.GetWindowRect(window, ctypes.byref(parent))
@@ -120,7 +121,7 @@ def verify_layout_at_native_dpi(window):
             gdi.SelectObject(dc, font)
             USER.ReleaseDC(child, dc)
         bounds.append(area)
-    assert bounds[0].right < bounds[1].left and bounds[0].top == bounds[1].top
+    assert bounds[0].bottom < bounds[1].top
     save = w.RECT()
     USER.GetWindowRect(USER.GetDlgItem(window, 420), ctypes.byref(save))
     assert max(area.bottom for area in bounds) < save.top
