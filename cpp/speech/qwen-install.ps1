@@ -9,6 +9,7 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
 $utf8=[Text.UTF8Encoding]::new($false)
+$script:Model=if($Variant -eq '1.7B'){'qwen17'}else{'qwen'}
 $script:Phase='check'; $script:Resource=''; $script:Origin=''; $script:Operation='check'; $script:NativeDetail=''; $script:ExitCode=''
 # Load helper declarations only; do not execute SenseVoice installation.
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'install.ps1'),[ref]$null,[ref]$null)

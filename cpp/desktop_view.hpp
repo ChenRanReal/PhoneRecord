@@ -161,8 +161,8 @@ private:
         createFonts(); background_ = CreateSolidBrush(RGB(246, 248, 252)); white_ = CreateSolidBrush(RGB(255, 255, 255));
         button("nav.overview", 100, -1); button("nav.recordings", 101, -1); button("nav.diagnostics", 102, -1); button("nav.settings", 103, -1); button("nav.help", 104, -1);
 #ifdef _WIN64
-        button("nav.speech", 107, -1);
-        button("speech.live_tab",228,6); button("speech.settings",229,6);
+        button("speech.module_live", 107, -1);
+        button("speech.nav_history",109,-1);
 #endif
         button("nav.updates", 105, -1);
         button("button.exit", 902, -1);
@@ -233,9 +233,6 @@ private:
         notificationChoice_ = localizedControl(L"BUTTON", "field.notifications", WS_TABSTOP | BS_AUTOCHECKBOX, 414, 3);
         SendMessageW(notificationChoice_, BM_SETCHECK, g_cfg.trayNotifications ? BST_CHECKED : BST_UNCHECKED, 0);
         startupChoice_ = localizedControl(L"BUTTON", "field.startup", WS_TABSTOP | BS_AUTOCHECKBOX | BS_NOTIFY, 415, 3);
-#ifdef _WIN64
-        button("speech.settings", 436, 3);
-#endif
         refreshStartup();
         localizedControl(L"STATIC", "field.record_folder_mode", SS_LEFT, 731, 3);
         storageMode_ = control(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, 418, 3);
@@ -302,12 +299,17 @@ private:
             if (child.id >= 100 && child.id <= 104) {
                 int row = child.id - 100;
 #ifdef _WIN64
-                if (child.id >= 102) ++row;
+                if (child.id >= 102) row += 2;
 #endif
-                move(child.window, 14, 118 + row * 54, 148, 42);
+                #ifdef _WIN64
+                move(child.window,14,118+row*46,148,40);
+#else
+                move(child.window,14,118+row*54,148,42);
+#endif
             }
 #ifdef _WIN64
-            if (child.id == 107) move(child.window, 14, 226, 148, 42);
+            if (child.id == 107) move(child.window,14,210,148,40);
+            if (child.id == 109) move(child.window,14,256,148,40);
 #endif
             if (child.id == 902) move(child.window, 14, h - 88, 148, 34);
             if (child.id == 502) move(child.window, left, 460, 240, 34);
@@ -374,10 +376,6 @@ private:
         move(GetDlgItem(window_, 731), left, 376, column - 24, 22); move(storageMode_, left, 401, column - 24, 200);
         move(GetDlgItem(window_, 732), left + column + 10, 376, column - 24, 22); move(storagePattern_, left + column + 10, 401, column - 24, 32);
         move(storagePreview_, left, 449, available, 64);
-#ifdef _WIN64
-        move(GetDlgItem(window_, 436), left + available - 230, 306, 230, 36);
-        move(startupChoice_, left, 310, available - 242, 30);
-#endif
         const int noteTop = settingsGroup_ == 0 ? 482 : settingsGroup_ == 1 ? 554 : 530;
         move(settingNote_, left, noteTop, available, std::max(40, std::min(settingsGroup_ == 1 ? 68 : 110, h - 96 - noteTop)));
         move(GetDlgItem(window_, 420), left, h - 74, 136, 36);
@@ -393,9 +391,8 @@ private:
         if (diagnostics_) ListView_SetColumnWidth(diagnostics_, 3, px(std::max(200, available - 315)));
         if (recent_) ListView_SetColumnWidth(recent_, 2, px(std::max(200, available - 265)));
 #ifdef _WIN64
-        move(GetDlgItem(window_,228),w - 354,26,154,32); move(GetDlgItem(window_,229),w - 190,26,166,32);
         SpeechPage::place(left, 110, available, h - 134, dpi_);
-        if (SpeechPage::instance()) ShowWindow(SpeechPage::instance(), page_ == 6 ? SW_SHOW : SW_HIDE);
+        if (SpeechPage::instance()) ShowWindow(SpeechPage::instance(), (page_ == 6 || page_ == 8) ? SW_SHOW : SW_HIDE);
 #endif
         InvalidateRect(window_, NULL, FALSE);
     }
@@ -410,9 +407,6 @@ private:
             else if (id == 411 || id == 723 || id == 414 || id == 415 || id == 418 || id == 419 || (id >= 731 && id <= 733)) group = 2;
             else if (id == 722 || id == 420 || id == 435 || (id >= 432 && id <= 434)) group = -1;
             else if (id == 424) group = 0;
-#ifdef _WIN64
-            else if (id == 436) group = 2;
-#endif
             bool visible = page_ == 3 && (group < 0 || group == settingsGroup_);
             if (id == 728) visible = page_ == 3 && settingsGroup_ == 0;
             if (id == 419 || id == 732) visible = visible && storageModeDraft() == "custom";
@@ -508,6 +502,7 @@ private:
         for (int id = 100; id <= 105; ++id) RedrawWindow(GetDlgItem(window_, id), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
 #ifdef _WIN64
         RedrawWindow(GetDlgItem(window_, 107), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+        RedrawWindow(GetDlgItem(window_,109),NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
 #endif
     }
 
@@ -741,15 +736,15 @@ private:
         drawText(dc, uiText("app.subtitle"), 21, 62, 150, 42, RGB(153, 175, 202), smallFont_, DT_LEFT | DT_TOP | DT_WORDBREAK);
         drawText(dc, uiText("field.language"), 14, height() - 164, 148, 22, RGB(153, 175, 202), smallFont_);
         drawText(dc, L"v" + utf8ToWide(kProductVersion), 21, height() - 42, versionLabelWidth(dc) + 4, 22, RGB(153, 175, 202), smallFont_);
-        const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help", "nav.updates", "speech.title"};
-        const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle", "update.subtitle", "speech.subtitle"};
+        const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help", "nav.updates", "speech.module_live", "app.title", "speech.module_history"};
+        const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle", "update.subtitle", "speech.module_live_subtitle", "app.subtitle", "speech.module_history_subtitle"};
         drawText(dc, uiText(titles[page_]), 200, 22, width() - 430, 40, RGB(23, 40, 65), titleFont_);
         drawText(dc, uiText(subtitles[page_]), 200, 66, width() - 224, 25, RGB(100, 116, 139), font_);
         const auto state = diagnosticSnapshot();
         const bool ready = state.controlListening && (state.eventListening || g_cfg.hookPort == 0) && (state.authenticated || g_cfg.hookPort == 0) && g_diagnosticLog.storageError().empty() && state.localHealth.status != 2 && state.phoneHealth.status != 2;
         const bool configured = compatibilitySnapshot().verdict == "ready" || state.attemptRtp;
         const wchar_t* badge = g_offline ? uiText("status.offline") : restartNeeded_ ? uiText("status.saved_restart") : !ready ? uiText("status.attention") : g_cfg.hookPort == 0 ? uiText("status.receiver") : uiText(configured ? "status.ready" : "status.setup_needed");
-        if (page_ != 6) drawText(dc, badge, width() - 226, 30, 202, 28, ready && (configured || g_cfg.hookPort == 0) && !g_offline ? RGB(16, 127, 101) : RGB(179, 102, 10), font_, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        if (page_ != 6 && page_ != 8) drawText(dc, badge, width() - 226, 30, 202, 28, ready && (configured || g_cfg.hookPort == 0) && !g_offline ? RGB(16, 127, 101) : RGB(179, 102, 10), font_, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         if (page_ == 0) paintOverview(dc, state);
         if (page_ == 1) paintPlayer(dc);
         if (page_ == 1) drawText(dc, uiText("footer.evidence"), 200, height() - 36, width() - 224, 24, RGB(100, 116, 139), smallFont_);
@@ -892,7 +887,7 @@ private:
             return;
         }
         const bool tab = id >= 432 && id <= 434;
-        const bool nav = (id >= 100 && id <= 105) || id == 107 || id == 902, active = (id >= 100 && id <= 105 && id - 100 == page_) || (id == 107 && page_ == 6) || (tab && id - 432 == settingsGroup_);
+        const bool nav = (id >= 100 && id <= 105) || id == 107 || id == 109 || id == 902, active = (id >= 100 && id <= 105 && id - 100 == page_) || (id == 109 && page_ == 8) || (id == 107 && page_ == 6) || (tab && id - 432 == settingsGroup_);
         const bool disabled = (item->itemState & ODS_DISABLED) != 0, pressed = (item->itemState & ODS_SELECTED) != 0;
         COLORREF fill = nav ? active ? RGB(43, 105, 230) : RGB(20, 32, 51) : id == 500 || id == 420 || (tab && active) ? RGB(43, 105, 230) : RGB(255, 255, 255);
         if (pressed) fill = nav || id == 500 || id == 420 ? RGB(29, 79, 180) : RGB(232, 239, 250);
@@ -1106,11 +1101,7 @@ private:
         AppendMenuW(menu, MF_STRING | (selected && !analysisWorker_.joinable() ? 0 : MF_GRAYED), 213, uiText("button.analyse"));
 #ifdef _WIN64
         AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(menu, flags, 225, uiText("speech.transcribe"));
-        AppendMenuW(menu, flags, 226, uiText("speech.result"));
-        AppendMenuW(menu, MF_STRING, 436, uiText("speech.settings"));
-        const auto speech = g_speech.state();
-        AppendMenuW(menu, MF_STRING | (speech.busy || speech.waiting ? 0 : MF_GRAYED), 227, uiText("speech.cancel"));
+        AppendMenuW(menu, flags, 225, uiText("speech.module_history"));
 #endif
         const UINT action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, point.x, point.y, 0, window_, NULL);
         DestroyMenu(menu);
@@ -1241,28 +1232,26 @@ private:
 
 #ifdef _WIN64
     /// Navigate to the embedded speech page; retain the main shell and ordinary sidebar selection.
-    void openSpeech(const wstring& wav = L"") {
+    void openSpeech(const wstring& wav = L"@live") {
         HWND child = SpeechPage::show(window_, wav, dpi_);
         if (!child) return;
         controls_.erase(std::remove_if(controls_.begin(), controls_.end(), [](const Control& item) { return item.id == 960; }), controls_.end());
-        controls_.push_back({child, 6, 960, ""});
-        switchPage(6);
+        const int page=wav==L"@live"?6:8;
+        controls_.push_back({child,page,960,""});
+        switchPage(page);
     }
 #endif
 
     /// Dispatch user operations without running network requests on the GUI thread.
     void command(int id) {
 #ifdef _WIN64
-        if (id == 107 || id == 436 || id == 228 || id == 229) { openSpeech(id == 228 || (id == 107 && g_speech.state().enabled) ? L"@live" : L""); return; }
-        if (id == 227) { g_speech.cancel(); return; }
-        if (id == 225 || id == 226) {
+        if(id==107){openSpeech(L"@live");return;}
+        if(id==109){openSpeech(L"");return;}
+        if (id == 225) {
             const string path = selectedFile();
             if (path.empty()) return;
             wchar_t absolute[32768]{}; GetFullPathNameW(utf8ToWide(path).c_str(), static_cast<DWORD>(std::size(absolute)), absolute, NULL);
-            if (id == 226) openSpeech(absolute);
-            else if (!g_speech.state().enabled || !g_speech.readyFor(g_speech.model())) openSpeech();
-            else if (!g_speech.enqueue(absolute)) MessageBoxW(window_, uiText("speech.admission_failed"), uiText("speech.title"), MB_OK | MB_ICONINFORMATION);
-            else openSpeech(absolute);
+            openSpeech(absolute);
             return;
         }
 #endif
@@ -1587,7 +1576,7 @@ private:
             }
             #ifdef _WIN64
             const auto liveSpeech = g_speech.state();
-            if (liveSpeech.enabled && liveSpeech.recording && liveSpeech.liveWav != lastLiveSpeech_) { lastLiveSpeech_ = liveSpeech.liveWav; openSpeech(L"@live"); }
+            if (liveSpeech.liveEnabled && liveSpeech.recording && liveSpeech.liveWav != lastLiveSpeech_) { lastLiveSpeech_ = liveSpeech.liveWav; openSpeech(L"@live"); }
 #endif
             const auto state = diagnosticSnapshot();
             const int sessions = static_cast<int>(g_sessionCount.load()), recordings = g_activeRecordings.load();

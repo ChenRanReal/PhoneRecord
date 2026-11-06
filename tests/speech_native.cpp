@@ -32,6 +32,25 @@ struct SpeechFixture {
         assert(SpeechService::write(restored.root_ + L"\\qwen\\installed-1.7b-v1","fixture"));
         assert(restored.readyFor("qwen") && restored.readyFor("qwen17"));
     }
+    /// Turning off live captions preserves admitted history work and both modules' defaults.
+    static void modulePreferences(const wstring& config,const wstring& file) {
+        SpeechService service;service.start(config);
+        assert(service.configureLive(true,"en","hf-mirror.com"));
+        assert(service.configure(true,"ja","huggingface.co",true));
+        assert(service.enqueue(file,false,"qwen17"));
+        assert(service.enqueue(file,false,"sense"));service.cancelModel("sense");
+        assert(service.pendingFor("qwen17") && !service.pendingFor("sense"));
+        assert(service.configureLive(false,"zh","hf-mirror.com"));
+        assert(service.state().waiting==1 && service.state().enabled && !service.state().liveEnabled);
+        service.recordingStarted(file);service.recordingEnded(file);
+        assert(!service.state().recording && service.state().waiting==1);
+        service.stop();
+        SpeechService restored;restored.start(config);
+        assert(restored.state().waiting==1 && !restored.state().liveEnabled);
+        assert(restored.language()=="ja" && restored.liveLanguage()=="zh");
+        assert(restored.source()=="huggingface.co" && restored.liveSource()=="hf-mirror.com");
+        restored.cancel();restored.stop();
+    }
     /// Verify no thread or directory exists until explicit enablement; queue survives restart.
     static void admission(const wstring& config, const wstring& file) {
         SpeechService service; service.start(config);
@@ -89,6 +108,7 @@ int main() {
     SpeechFixture::cancellation((root / L"cancel.ini").wstring());
     SpeechFixture::failures((root / L"failure.ini").wstring());
     SpeechFixture::hybrid((root / L"hybrid.ini").wstring(),file.wstring());
+    SpeechFixture::modulePreferences((root/L"modules.ini").wstring(),file.wstring());
     UpdateManifest manifest;
     const string fields = "\nfile=PhoneRecord.exe\nsize=3\nsha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
     assert(!manifest.parse("PhoneRecord-update-v1\nversion=9.0.0\narch=x86" + fields));

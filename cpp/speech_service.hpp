@@ -16,7 +16,9 @@ struct SpeechState {
     /// Current percentage and waiting file count.
     int percent = 0, waiting = 0;
     /// User preference and one owned process operation.
-    bool enabled = false, busy = false, installed = false, recording = false;
+    bool enabled = false, busy = false, installed = false, recording = false, liveEnabled = false;
+    /// Model currently owning the shared worker or its last diagnostic.
+    string operationModel;
     /// Last live recording identity is retained for viewing after hangup.
     wstring liveWav;
     /// Monotonic change marker for inexpensive native redraws.
@@ -65,12 +67,15 @@ public:
         source_ = jsonField(saved, "source"); if (source_ != "hf-mirror.com") source_ = "huggingface.co";
         selectedModel_ = savedModel(jsonField(saved,"model"));
         state_.enabled = jsonField(saved, "enabled") == "1";
+        state_.liveEnabled = jsonField(saved,"liveEnabled").empty() ? state_.enabled : jsonField(saved,"liveEnabled") == "1";
+        liveLanguage_ = jsonField(saved,"liveLanguage"); if (!validLanguage(liveLanguage_)) liveLanguage_ = language_;
+        liveSource_ = jsonField(saved,"liveSource") == "hf-mirror.com" ? "hf-mirror.com" : "huggingface.co";
         state_.installed = installed(selectedModel_);
         state_.step = state_.enabled ? state_.installed ? "standby" : "unprepared" : "off";
         if (state_.enabled) {
             string failure = read(root_ + L"\\install-error.json", 16384);
             if (failure.empty()) failure = read(root_ + L"\\progress.json", 16384);
-            if (!state_.installed && isFailure(jsonField(failure,"step"))) observeProgress(failure);
+            if (isFailure(jsonField(failure,"step"))) { state_.operationModel=validModel(jsonField(failure,"model"))?jsonField(failure,"model"):selectedModel_; observeProgress(failure); }
             std::istringstream savedQueue(read(queueFile_, 1024 * 1024)); string row;
             while (queue_.size() < 1000 && std::getline(savedQueue, row)) {
                 const wstring wav = utf8ToWide(jsonField(row, "wav")); const string language = jsonField(row, "language");
@@ -105,7 +110,7 @@ public:
     void recordingStarted(const wstring& wav) {
         if (!safeRecording(wav,true)) return;
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!state_.enabled || stopping_ || state_.recording) return;
+        if (!state_.enabled || !state_.liveEnabled || stopping_ || state_.recording) return;
         state_.recording = true; state_.liveWav = wav; liveCancelled_ = false;
         if (installed("sense")) {
             livePending_ = true; liveRan_ = false;
@@ -115,9 +120,10 @@ public:
     }
     /// Drain the live worker only after the recorder closes and patches its WAV.
     void recordingEnded(const wstring& wav) {
-        bool fallback = true;
+        bool fallback = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (state_.liveWav != wav && state_.liveEnabled) fallback = true;
             if (state_.liveWav == wav) {
                 state_.recording = false;
                 write(root_ + L"\\live.stop", "closed");
@@ -130,21 +136,41 @@ public:
     /// Read the explicit source; never automatically switch mirrors.
     string source() const { std::lock_guard<std::mutex> lock(mutex_); return source_; }
     /// Persist a validated preference patch; disabling cancels all admission and accepted jobs.
-    bool configure(bool enabled, const string& language, const string& source) {
+    bool configure(bool enabled, const string& language, const string& source, bool keepLive = false) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!validLanguage(language) || (source != "huggingface.co" && source != "hf-mirror.com")) return false;
-        if (!write(config_, "{\"enabled\":\"" + string(enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language) + ",\"source\":" + jsonQuoted(source) + ",\"model\":" + jsonQuoted(selectedModel_) + "}")) return false;
-        state_.enabled = enabled; language_ = language; source_ = source;
+        const bool live = keepLive ? state_.liveEnabled : enabled;
+        if (!write(config_, preferences(enabled,language,source,live))) return false;
+        state_.enabled = enabled; state_.liveEnabled = live; language_ = language; source_ = source;
         if (!enabled) { ++epoch_; install_ = false; livePending_ = false; queue_.clear(); persistQueue(false); state_.step = "off"; }
         else if (!state_.busy) state_.step = !state_.failureCode.empty() ? state_.failureCode : state_.installed ? "standby" : "unprepared";
         ++state_.revision;
         if (enabled) launchThread();
         wake_.notify_all(); return true;
     }
+    /// Live preferences are independent of manual history transcription and never cancel Qwen jobs.
+    bool configureLive(bool enabled, const string& language, const string& source) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!validLanguage(language) || (source != "huggingface.co" && source != "hf-mirror.com")) return false;
+        const string oldLanguage = liveLanguage_, oldSource = liveSource_;
+        liveLanguage_ = language; liveSource_ = source;
+        if (!write(config_,preferences(state_.enabled || enabled,language_,source_,enabled))) { liveLanguage_=oldLanguage; liveSource_=oldSource; return false; }
+        state_.liveEnabled = enabled; state_.enabled = state_.enabled || enabled;
+        if (!enabled) { livePending_=false; liveCancelled_=true; if (state_.recording && active_ == state_.liveWav && activeModel_ == "sense") ++epoch_; }
+        if (enabled) launchThread(); ++state_.revision; wake_.notify_all(); return true;
+    }
+    /// Read live-only language/source without affecting the Qwen defaults.
+    string liveLanguage() const { std::lock_guard<std::mutex> lock(mutex_); return liveLanguage_; }
+    /// Read the explicit SenseVoice model source.
+    string liveSource() const { std::lock_guard<std::mutex> lock(mutex_); return liveSource_; }
     /// Request explicit first-use setup; no installer is launched by ordinary transcription.
-    void prepare() {
+    void prepare(const string& model = "", const string& source = "") {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!state_.enabled || state_.busy || stopping_) return;
+        installModel_ = model.empty() ? selectedModel_ : model;
+        if (!validModel(installModel_)) return;
+        installSource_ = source.empty() ? source_ : source;
+        if (installSource_ != "huggingface.co" && installSource_ != "hf-mirror.com") return;
         install_ = true; launchThread(); wake_.notify_all();
     }
     /// Admit a finalized file once, preserving stable language at admission and a bounded disk queue.
@@ -159,6 +185,21 @@ public:
         queue_.push_back({wav, language_, model});
         if (!persistQueue()) { queue_.pop_back(); state_.step = "save_failed"; ++state_.revision; return false; }
         ++state_.revision; launchThread(); wake_.notify_all(); return true;
+    }
+    /// Query only the current module's admitted work for its local Stop action.
+    bool pendingFor(const string& model) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return (state_.busy && state_.operationModel==model) || (install_ && installModel_==model) || (model=="sense"&&livePending_) || std::any_of(queue_.begin(),queue_.end(),[&](const Job& item){return item.model==model;});
+    }
+    /// Stop one model without cancelling queued work from the other module.
+    void cancelModel(const string& model) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!validModel(model))return;
+        if(install_&&installModel_==model)install_=false;
+        if(state_.busy&&state_.operationModel==model){++epoch_;preempt_=false;state_.step="cancelled";}
+        if(model=="sense"){livePending_=false;liveCancelled_=true;}
+        queue_.erase(std::remove_if(queue_.begin(),queue_.end(),[&](const Job& item){return item.model==model;}),queue_.end());
+        persistQueue(activeModel_!=model);++state_.revision;wake_.notify_all();
     }
     /// Stop preparation and queued/running transcription without removing existing results or models.
     void cancel() {
@@ -204,6 +245,7 @@ private:
         if (expectedEpoch != static_cast<unsigned>(-1) && expectedEpoch != epoch_) return;
         if (body == lastProgress_) return; lastProgress_ = body;
         if (state_.step != step) state_.stepStarted = GetTickCount64();
+        if(validModel(jsonField(body,"model")))state_.operationModel=jsonField(body,"model");
         state_.step = step; state_.percent = std::max(0,std::min(100,atoi(jsonField(body,"percent").c_str())));
         const string phase = jsonField(body,"phase");
         if (!phase.empty()) state_.preparationStep = phase;
@@ -229,7 +271,11 @@ private:
     /// Each model owns a separate verified readiness marker.
     bool installed(const string& model) const { return GetFileAttributesW((root_ + (model == "qwen17" ? L"\\qwen\\installed-1.7b-v1" : model == "qwen" ? L"\\qwen\\installed-v1" : L"\\installed-v1")).c_str()) != INVALID_FILE_ATTRIBUTES; }
     /// Save model selection together with the existing independent speech preferences.
-    bool savePreferences() { return write(config_, "{\"enabled\":\"" + string(state_.enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language_) + ",\"source\":" + jsonQuoted(source_) + ",\"model\":" + jsonQuoted(selectedModel_) + "}"); }
+    bool savePreferences() { return write(config_,preferences(state_.enabled,language_,source_,state_.liveEnabled)); }
+    /// Serialize both modules together so editing either preserves the other's defaults.
+    string preferences(bool enabled,const string& language,const string& source,bool live) const {
+        return "{\"enabled\":\"" + string(enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language) + ",\"source\":" + jsonQuoted(source) + ",\"model\":" + jsonQuoted(selectedModel_) + ",\"liveEnabled\":\"" + string(live ? "1" : "0") + "\",\"liveLanguage\":" + jsonQuoted(liveLanguage_) + ",\"liveSource\":" + jsonQuoted(liveSource_) + "}";
+    }
     /// Check the exact provider-supported language set.
     static bool validLanguage(const string& value) { return value == "auto" || value == "zh" || value == "en" || value == "yue" || value == "ja" || value == "ko"; }
     /// Serialize one argument using Windows CRT quoting, without a command shell.
@@ -291,12 +337,13 @@ private:
                 std::unique_lock<std::mutex> lock(mutex_);
                 wake_.wait(lock, [&] { return stopping_ || (state_.enabled && (install_ || (livePending_ || std::any_of(queue_.begin(),queue_.end(),[&](const Job& j){return installed(j.model);})))); });
                 if (stopping_) return;
-                installing = install_; install_ = false; installingNow_ = installing; installModel = selectedModel_; source = source_; epoch = epoch_;
+                installing = install_; install_ = false; installingNow_ = installing; installModel = installModel_; source = installing ? installSource_ : source_; epoch = epoch_;
                 if (!installing) {
-                    if (livePending_) { task = {state_.liveWav,language_,"sense",true}; livePending_ = false; liveRan_ = true; DeleteFileW((root_ + L"\\live.stop").c_str()); if (!state_.recording) write(root_ + L"\\live.stop","closed"); }
+                    if (livePending_) { task = {state_.liveWav,liveLanguage_,"sense",true}; livePending_ = false; liveRan_ = true; DeleteFileW((root_ + L"\\live.stop").c_str()); if (!state_.recording) write(root_ + L"\\live.stop","closed"); }
                     else { auto next = std::find_if(queue_.begin(),queue_.end(),[&](const Job& j){return installed(j.model);}); task = *next; queue_.erase(next); }
                     active_ = task.wav; activeLanguage_ = task.language; activeModel_ = task.model;
                 }
+                state_.operationModel = installing ? installModel : task.model;
                 state_.busy = true; state_.step = installing ? "check" : "load"; state_.percent = 0;
                 state_.failureCode.clear(); state_.failedStep.clear(); state_.detail.clear(); state_.httpStatus.clear(); state_.nativeCode.clear(); state_.processExit.clear();
                 state_.resource.clear(); state_.origin.clear(); state_.operation.clear(); lastProgress_.clear();
@@ -373,6 +420,8 @@ private:
     /// Root, per-config preferences/queue, and currently owned WAV identity.
     wstring root_, config_, queueFile_, active_;
     /// Language captured for the running file and defaults for future admission.
+    string installModel_ = "sense", installSource_ = "huggingface.co", liveLanguage_ = "auto", liveSource_ = "huggingface.co";
+    /// History defaults and active job identity.
     string selectedModel_ = "sense", activeModel_ = "sense", activeLanguage_, language_ = "auto", source_ = "huggingface.co";
     /// Detached public observation.
     SpeechState state_;

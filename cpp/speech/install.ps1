@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $utf8 = [Text.UTF8Encoding]::new($false)
+$script:Model = 'sense'
 $script:Phase = 'check'
 $script:Resource = ''
 $script:Origin = ''
@@ -29,7 +30,7 @@ function Redact([string]$Value) {
 function Publish([string]$Step, [int]$Percent = 0, [long]$Completed = 0, [long]$Total = 0) {
     # Publish only stable codes; never emit private paths or downloaded error pages.
     $body = @{step=$Step;percent=[string]$Percent;completed=[string]$Completed;total=[string]$Total;
-        phase=$script:Phase;resource=$script:Resource;origin=$script:Origin;operation=$script:Operation} | ConvertTo-Json -Compress
+        model=$script:Model;phase=$script:Phase;resource=$script:Resource;origin=$script:Origin;operation=$script:Operation} | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($ProgressFile + '.pending', $body, $utf8)
     Move-Item -LiteralPath ($ProgressFile + '.pending') -Destination $ProgressFile -Force
 }
@@ -111,7 +112,7 @@ function ReportFailure([Exception]$Cause) {
     $detail = Redact (($chain -join "`n") + $(if ($script:NativeDetail) { "`n" + $script:NativeDetail } else { '' }))
     $failure = @{step=$code;percent='0';completed='0';total='0';phase=$script:Phase;operation=$script:Operation;
         resource=$script:Resource;origin=$script:Origin;detail=$detail;httpStatus=$httpStatus;nativeCode=$nativeCode;exitCode=$script:ExitCode;
-        timestamp=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress
+        model=$script:Model;timestamp=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress
     [IO.File]::WriteAllText((Join-Path $Root 'install-error.json'), $failure, $utf8)
     [IO.File]::WriteAllText($ProgressFile + '.pending', $failure, $utf8)
     Move-Item -LiteralPath ($ProgressFile + '.pending') -Destination $ProgressFile -Force
