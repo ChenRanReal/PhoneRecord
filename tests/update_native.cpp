@@ -158,6 +158,18 @@ int wmain(int count, wchar_t** args) {
             state.staged = directory + L"\\stage\\PhoneRecord.exe";
             require(updateBeginInstall(state, directory + L"\\config.ini"), "installer parent/helper handshake"); return 0;
         }
+        if (count > 2 && wcscmp(args[1], L"--test-install-blocked") == 0) {
+            wchar_t publicKey[8192]{}; GetEnvironmentVariableW(L"PHONERECORD_UPDATE_TEST_PUBLIC_KEY", publicKey, 8192); g_updateTestKey = wideToUtf8(publicKey);
+            const wstring directory = args[2]; UpdateState state; UpdatePrepareDetail detail;
+            require(updateRead(directory + L"\\stage\\update-manifest.txt", state.signedManifest) && updateRead(directory + L"\\stage\\update-manifest.sig", state.signature, 8192) && state.manifest.parse(state.signedManifest), "blocked install fixture");
+            state.staged = directory + L"\\stage\\PhoneRecord.exe";
+            const bool begun = updateBeginInstall(state, directory + L"\\config.ini", &detail);
+            if (begun || detail.code != UpdatePrepareCode::BackupExists) return 31;
+            wchar_t executable[32768]{}; GetModuleFileNameW(NULL, executable, 32768);
+            if (GetFileAttributesW((wstring(executable) + L".update-backup").c_str()) == INVALID_FILE_ATTRIBUTES) return 32;
+            if (GetFileAttributesW((directory + L"\\stage\\PhoneRecord-updater.exe").c_str()) != INVALID_FILE_ATTRIBUTES) return 33;
+            return 0;
+        }
         if (count > 2 && wcscmp(args[1], L"--config") == 0) {
             const wstring config = args[2];
             for (int i = 3; i + 1 < count; ++i) if (wcscmp(args[i], L"--update-ack") == 0) {
@@ -274,6 +286,29 @@ int wmain(int count, wchar_t** args) {
             string preserved; require(updateRead(configPath, preserved) && preserved == "synthetic settings\n", "configuration preserved");
             require(updateRead(directory + L"\\recording-sentinel.txt", preserved) && preserved == "preserve\n", "unrelated data preserved");
             Sleep(200);
+        }
+        {
+            const wstring directory = folder + L"\\blocked", stage = directory + L"\\stage", target = directory + L"\\PhoneRecord.exe", backup = target + L".update-backup";
+            require(CreateDirectoryW(directory.c_str(), NULL) && CreateDirectoryW(stage.c_str(), NULL), "blocked installer workspace");
+            require(CopyFileW(ownPath, target.c_str(), TRUE) && CopyFileW(ownPath, (stage + L"\\PhoneRecord.exe").c_str(), TRUE), "blocked installer copies");
+            require(updateWrite(stage + L"\\update-manifest.txt", installManifest) && updateWrite(stage + L"\\update-manifest.sig", key.sign(installManifest)), "blocked signed fixture");
+            require(updateWrite(directory + L"\\config.ini", "synthetic settings\n") && updateWrite(backup, "previous version\n"), "leftover backup fixture");
+            wstring command = updateArgument(target) + L" --test-install-blocked " + updateArgument(directory);
+            STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION process{};
+            require(CreateProcessW(target.c_str(), &command[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, directory.c_str(), &startup, &process), "launch blocked installer parent");
+            require(WaitForSingleObject(process.hProcess, 15000) == WAIT_OBJECT_0, "blocked parent exits without installing");
+            DWORD exitCode = 1; GetExitCodeProcess(process.hProcess, &exitCode); CloseHandle(process.hThread); CloseHandle(process.hProcess);
+            require(exitCode == 0, "leftover backup is reported before installation");
+            string preserved; require(updateRead(backup, preserved) && preserved == "previous version\n", "leftover backup was not deleted");
+            require(updateRead(target, preserved, 64 * 1024 * 1024) && preserved == executableBytes, "blocked program bytes unchanged");
+            wstring kept; DWORD keepError = 99;
+            require(updateKeepAside(backup, kept, keepError) && keepError == 0, "operator can keep the leftover aside");
+            require(updateRead(kept, preserved) && preserved == "previous version\n", "kept backup bytes");
+            require(GetFileAttributesW(backup.c_str()) == INVALID_FILE_ATTRIBUTES, "original leftover path cleared");
+            require(updateWrite(backup, "again\n"), "second leftover");
+            wstring keptAgain; require(!updateKeepAside(backup, keptAgain, keepError) && keepError == ERROR_ALREADY_EXISTS, "existing kept file is not overwritten");
+            require(updateRead(kept, preserved) && preserved == "previous version\n" && updateRead(backup, preserved) && preserved == "again\n", "both leftover copies preserved");
+            require(updateWrite(directory + L"\\notes.txt", "x\n") && !updateKeepAside(directory + L"\\notes.txt", keptAgain, keepError) && keepError == ERROR_INVALID_NAME, "unrelated files are not renamed");
         }
         SetEnvironmentVariableW(L"PHONERECORD_UPDATE_TEST_PUBLIC_KEY", NULL);
         if (count == 2) { UpdateTrayFixture::run(folder, manifest, signature); AddressAlertFixture::run(folder); }

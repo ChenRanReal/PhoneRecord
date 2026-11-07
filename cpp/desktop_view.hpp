@@ -1569,6 +1569,47 @@ private:
         }
     }
 
+    /// Explain one preparation failure, including the manual replacement path. Returns true only after a leftover was renamed.
+    bool reportPrepareFailure(const UpdateState& state, const UpdatePrepareDetail& detail) {
+        const wchar_t* reason = uiText("update.prepare_helper");
+        switch (detail.code) {
+        case UpdatePrepareCode::StageInvalid: reason = uiText("update.prepare_stage"); break;
+        case UpdatePrepareCode::ModulePath: reason = uiText("update.prepare_module"); break;
+        case UpdatePrepareCode::BackupExists: reason = uiText("update.prepare_backup"); break;
+        case UpdatePrepareCode::ReplacementExists: reason = uiText("update.prepare_replacement"); break;
+        case UpdatePrepareCode::HelperCopy: reason = uiText("update.prepare_helper_copy"); break;
+        case UpdatePrepareCode::DirectoryDenied: reason = uiText("update.prepare_directory"); break;
+        case UpdatePrepareCode::ProcessHandle: reason = uiText("update.prepare_process"); break;
+        case UpdatePrepareCode::ReadyEvent: reason = uiText("update.prepare_event"); break;
+        case UpdatePrepareCode::HelperLaunch: reason = uiText("update.prepare_launch"); break;
+        case UpdatePrepareCode::HelperVerify: reason = uiText("update.prepare_verify"); break;
+        case UpdatePrepareCode::HelperRejected: reason = uiText("update.prepare_rejected"); break;
+        case UpdatePrepareCode::HelperTimeout: reason = uiText("update.prepare_timeout"); break;
+        case UpdatePrepareCode::HelperFailed: reason = uiText("update.prepare_helper"); break;
+        case UpdatePrepareCode::Ok: break;
+        }
+        wchar_t executable[32768]{}; GetModuleFileNameW(NULL, executable, static_cast<DWORD>(std::size(executable)));
+        wstring text = reason;
+        if (!detail.blocking.empty()) text += L"\r\n" + wstring(uiText("update.prepare_file")) + L" " + detail.blocking;
+        if (detail.win32) text += L"\r\n" + wstring(uiText("update.prepare_win32")) + L" " + std::to_wstring(detail.win32);
+        if (detail.helperExit) text += L"\r\n" + wstring(uiText("update.prepare_exit")) + L" " + std::to_wstring(detail.helperExit);
+        const bool movable = (detail.code == UpdatePrepareCode::BackupExists || detail.code == UpdatePrepareCode::ReplacementExists) && !detail.blocking.empty();
+        if (movable) text += L"\r\n\r\n" + wstring(uiText("update.prepare_keep_offer"));
+        text += L"\r\n\r\n" + wstring(uiText("update.prepare_manual"));
+        text += L"\r\n" + wstring(uiText("update.prepare_downloaded")) + L" " + state.staged;
+        text += L"\r\n" + wstring(uiText("update.prepare_current")) + L" " + executable;
+        LOGW("UPDATE_PREPARE_FAILED code=%s win32=%lu helper=%lu", updatePrepareName(detail.code), detail.win32, detail.helperExit);
+        if (!movable) { MessageBoxW(window_, text.c_str(), L"PhoneRecord", MB_OK | MB_ICONERROR); return false; }
+        if (MessageBoxW(window_, text.c_str(), L"PhoneRecord", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return false;
+        wstring kept; DWORD error = 0;
+        if (!updateKeepAside(detail.blocking, kept, error)) {
+            wstring failed = wstring(uiText("update.prepare_keep_failed")) + L"\r\n" + wstring(uiText("update.prepare_win32")) + L" " + std::to_wstring(error);
+            failed += L"\r\n" + wstring(uiText("update.prepare_file")) + L" " + detail.blocking;
+            MessageBoxW(window_, failed.c_str(), L"PhoneRecord", MB_OK | MB_ICONERROR); return false;
+        }
+        return true;
+    }
+
     /// Confirm an explicit service interruption, then atomically refuse installation if a call won the race.
     void installUpdate() {
 #ifdef _WIN64
@@ -1578,7 +1619,7 @@ private:
         const auto state = updates_.state();
         if (state.busy || state.staged.empty() || g_offline) return;
         if (MessageBoxW(window_, uiText("update.confirm_install"), L"PhoneRecord", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
-        if (!updates_.reserveInstall(state)) { MessageBoxW(window_, uiText("update.prepare_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return; }
+        if (!updates_.reserveInstall(state)) { MessageBoxW(window_, uiText("update.prepare_changed"), L"PhoneRecord", MB_OK | MB_ICONWARNING); return; }
         bool busy = false;
         {
             std::lock_guard<std::mutex> admission(g_updateAdmission);
@@ -1590,10 +1631,14 @@ private:
             if (!busy) g_updateInstalling = true;
         }
         if (busy) { updates_.cancelInstall(); MessageBoxW(window_, uiText("update.call_busy"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
-        if (!updateBeginInstall(state, g_configPath)) {
-            { std::lock_guard<std::mutex> admission(g_updateAdmission); g_updateInstalling = false; }
-            updates_.cancelInstall();
-            MessageBoxW(window_, uiText("update.prepare_failed"), L"PhoneRecord", MB_OK | MB_ICONERROR); return;
+        UpdatePrepareDetail prepare;
+        if (!updateBeginInstall(state, g_configPath, &prepare)) {
+            const bool retry = reportPrepareFailure(state, prepare);
+            if (!retry || !updateBeginInstall(state, g_configPath, &prepare)) {
+                if (retry) reportPrepareFailure(state, prepare);
+                { std::lock_guard<std::mutex> admission(g_updateAdmission); g_updateInstalling = false; }
+                updates_.cancelInstall(); return;
+            }
         }
         LOGI("UPDATE_INSTALL_CONFIRMED version=%s", state.manifest.version.c_str());
         updates_.preserveStaging();
