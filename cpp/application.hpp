@@ -51,14 +51,18 @@ public:
         std::lock_guard<std::mutex> admission(g_updateAdmission);
         std::lock_guard<std::mutex> guard(mutex_);
         if (!running_ || g_stopping || g_updateInstalling) return false;
+        if (operation == "directory" && g_offline) return false;
         const bool setup = operation == "setup_preview" || operation == "setup_apply";
         if (setup && (setupProgress_.running || g_offline || g_updateStartupPending ||
             !g_cfg.errors().empty() || g_cfg.hookPort == 0 || callActive_ || g_sessionCount > 0 ||
             (operation == "setup_apply" && setupPlan.empty()))) return false;
         if (operation == "start" && g_updateStartupPending) return false;
-        if ((operation == "phone" || operation == "login" || operation == "compatibility" || operation == "start") && !g_cfg.errors().empty()) {
+        if ((operation == "phone" || operation == "login" || operation == "compatibility" || operation == "directory" || operation == "start") && !g_cfg.errors().empty()) {
             if (operation == "compatibility") { CompatibilityReport report; report.verdict = "settings"; report.checkedAt = diagnosticTime(); report.items.push_back({"local", "fail", "local_fix"}); publishCompatibility(report); }
             LOGW("COMMAND_REQUIRES_VALID_CONFIG operation=%s", operation.c_str()); return false;
+        }
+        if (operation == "directory" && string(origin) == "startup") {
+            automaticDirectoryPending_ = true; wake_.notify_one(); return true;
         }
         if (operation == "compatibility" && string(origin) == "startup") automaticCompatibilityPending_ = true;
         if (operation == "start") {
@@ -71,7 +75,7 @@ public:
             callActive_ = false; g_callEnded = true;
             diagnosticUpdate([](DiagnosticSnapshot& state) { state.callActive = false; });
             queue_.erase(std::remove(queue_.begin(), queue_.end(), "start"), queue_.end());
-        } else if ((operation == "phone" || operation == "login" || operation == "compatibility") && (callActive_ || g_sessionCount > 0)) {
+        } else if ((operation == "phone" || operation == "login" || operation == "compatibility" || operation == "directory") && (callActive_ || g_sessionCount > 0)) {
             if (operation == "compatibility") { CompatibilityReport report; report.verdict = "deferred"; report.checkedAt = diagnosticTime(); publishCompatibility(report); }
             LOGW("PHONE_CHECK_DEFERRED call_active=true"); return false;
         }
@@ -123,9 +127,12 @@ private:
                         if (now - g_lastCallActivity.load() < 20000) continue;
                         if (g_phoneAddressRevision.load() != addressRevision_ && !phoneAddress().empty()) {
                             addressRevision_ = g_phoneAddressRevision.load();
+                            nextDirectory_ = 0;
                             operation = "compatibility"; beginCompatibility();
                         }
                         else if (automaticCompatibilityPending_) operation = "compatibility";
+                        else if (automaticDirectoryPending_) operation = "directory";
+                        else if (!g_offline && g_cfg.errors().empty() && diagnosticSnapshot().authenticated && now >= nextDirectory_) operation = "directory";
                         else {
                             if (interval <= 0 || now < nextHealth_) continue;
                             nextHealth_ = now + static_cast<ULONGLONG>(interval) * 1000;
@@ -162,9 +169,19 @@ private:
             else if (operation == "track") {
                 if (targetReady && !g_offline && !diagnosticSnapshot().callActive && g_sessionCount == 0) {
                     g_phone.login(); g_phone.checkCompatibility(); addressRevision_ = g_phoneAddressRevision.load();
+                    nextDirectory_ = 0;
                 }
             }
             else if (operation == "local") runLocalChecks();
+            else if (operation == "directory") {
+                if (!diagnosticSnapshot().callActive && g_sessionCount == 0 && g_pendingCallEvents == 0) {
+                    if (!g_offline && !diagnosticSnapshot().authenticated) g_phone.login(true);
+                    g_phone.syncDirectory();
+                } else LOGI("DIRECTORY_SYNC_DEFERRED");
+                nextDirectory_ = GetTickCount64() + 300000;
+                std::lock_guard<std::mutex> guard(mutex_);
+                automaticDirectoryPending_ = diagnosticSnapshot().callActive || g_sessionCount > 0 || g_pendingCallEvents > 0;
+            }
             else if (operation == "login") g_phone.login();
             else if (operation == "compatibility") {
                 runLocalChecks();
@@ -222,9 +239,13 @@ private:
     bool callActive_ = false;
     /// Startup inspection awaiting an idle retry after a call; guarded by mutex_.
     bool automaticCompatibilityPending_ = false;
+    /// External-trigger startup directory read waits for idle, including calls received during launch.
+    bool automaticDirectoryPending_ = false;
     /// Monotonic idle-check schedule, owned exclusively by the operation thread.
     /// Last endpoint generation inspected after discovery and the idle quiet period.
     unsigned addressRevision_ = 0;
+    /// Five-minute idle synchronization cadence; never uses the call-start path.
+    ULONGLONG nextDirectory_ = 0;
     ULONGLONG nextHealth_ = 0;
     int scheduledInterval_ = -1;
 };
@@ -267,8 +288,14 @@ static void hookHandler(HttpRequest& request, HttpResponse& response) {
         std::lock_guard<std::mutex> guard(g_updateAdmission);
         const string target = phoneAddress();
         const bool dhcp = g_cfg.phoneAddressMode == "dhcp";
-        if ((dhcp && !authorizedPhoneCallback(request.query["pair"])) ||
-            (!dhcp && (tracking || target.empty() || request.sourceIp != target))) { response.status = 403; response.body = "source rejected"; LOGW("EVENT_SOURCE_REJECTED"); return; }
+        const bool paired = !dhcp || authorizedPhoneCallback(request.query["pair"]);
+        // The current phone may omit or truncate the pairing token. A different address still needs it.
+        const bool currentPhone = dhcp && !paired && !target.empty() && request.sourceIp == target;
+        if ((dhcp && !paired && !currentPhone) || (!dhcp && (tracking || target.empty() || request.sourceIp != target))) {
+            response.status = 403; response.body = "source rejected";
+            LOGW("EVENT_SOURCE_REJECTED event=%s peer=%s pair_len=%u", event.c_str(), request.sourceIp.c_str(), static_cast<unsigned>(request.query["pair"].size()));
+            return;
+        }
         if (start && (g_updateInstalling || g_updateStartupPending)) { response.status = 503; response.body = "update in progress"; return; }
         if (start) admission = std::make_shared<PendingCallEvent>();
     }

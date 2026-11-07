@@ -146,11 +146,15 @@ static bool setupCallback(const string& original, const char* event, string& tar
             const bool correct = value == event || (string(event) == "est" && value == "established") || (string(event) == "end" && value == "terminated");
             if (!correct || matches) return false; matches = true;
         }
-        if (pair.substr(0, equal) != "pair") { if (!retained.empty()) retained += '&'; retained += pair; }
+        const string key = equal == string::npos ? pair : pair.substr(0, equal);
+        if (key != "pair" && key != "ev" && key != "event") { if (!retained.empty()) retained += '&'; retained += pair; }
         if (end == string::npos) break; first = end + 1;
     }
-    if (!matches) return false; target = base + "/event?" + retained;
+    if (!matches) return false;
+    // Keep the event and pairing token ahead of phone macros so a short action URL still authorizes.
+    target = base + "/event?ev=" + event;
     if (g_cfg.phoneAddressMode == "dhcp") target += "&pair=" + phonePairingToken();
+    if (!retained.empty()) target += "&" + retained;
     return true;
 }
 

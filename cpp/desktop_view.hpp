@@ -10,7 +10,17 @@
 #include "update_installer.hpp"
 #include "local_ipv4.hpp"
 #include "speech_ui.hpp"
+#include "ai_ui.hpp"
 #include "tray_identity.hpp"
+
+/// DHCP tracking has no usable phone address, so a new call cannot be recorded yet.
+static bool recordingAddressUnavailable(const DiagnosticSnapshot& state) {
+    if (g_offline || g_cfg.phoneAddressMode != "dhcp") return false;
+    if (phoneAddress().empty()) return true;
+    if (state.phoneHealth.status != 2) return false;
+    const string& code = state.phoneHealth.code;
+    return code == "PHONE_UNREACHABLE" || code == "HTTP_TRANSPORT_FAILED" || code == "PHONE_STATE_UNAVAILABLE" || code == "PHONE_ADDRESS_UNRESOLVED";
+}
 
 /// Load a shared embedded product icon at the system's large or small native size.
 static HICON applicationIcon(bool smallSize = false) {
@@ -33,6 +43,8 @@ static const UINT kMediaNotification = WM_APP + 21;
 static const UINT kFileNotification = WM_APP + 22;
 /// Explicit offline-only render destination for native visual regression captures.
 static wstring g_uiCaptureDirectory;
+/// Open the live-caption page after the main window is created. x86 builds ignore it.
+static bool g_openLivePage = false;
 
 /// Notify the GUI without passing caller details through a cross-thread text buffer.
 static void desktopRecordingStarted(const string&, const string&) {
@@ -55,12 +67,14 @@ class DesktopView {
 #ifdef PHONERECORD_UPDATE_TESTING
     /// Observe the real owned tray controls in the separate native regression executable.
     friend struct UpdateTrayFixture;
+    /// Observe the address-unavailable icon without exposing it to the product.
+    friend struct AddressAlertFixture;
 #endif
 public:
     /// Adopt a system-DPI scale; native resources are created in WM_CREATE.
     explicit DesktopView(int dpi, HANDLE stopSignal = NULL) : dpi_(dpi), stopSignal_(stopSignal) {}
     /// Release every owned GDI object after the native window has been destroyed.
-    ~DesktopView() { updates_.stop(); if (localIpWorker_.joinable()) localIpWorker_.join(); if (updateIcon_) DestroyIcon(updateIcon_); destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
+    ~DesktopView() { updates_.stop(); if (localIpWorker_.joinable()) localIpWorker_.join(); if (updateIcon_) DestroyIcon(updateIcon_); if (alertIcon_) DestroyIcon(alertIcon_); if (alertIconLarge_) DestroyIcon(alertIconLarge_); destroyFonts(); if (background_) DeleteObject(background_); if (white_) DeleteObject(white_); }
 
     /// Hide a login-started window only when its tray entry can restore it.
     bool hasTrayIcon() const { return trayAdded_; }
@@ -163,6 +177,7 @@ private:
 #ifdef _WIN64
         button("speech.module_live", 107, -1);
         button("speech.nav_history",109,-1);
+        button("ai.title", 108, -1);
 #endif
         button("nav.updates", 105, -1);
         button("button.exit", 902, -1);
@@ -178,6 +193,7 @@ private:
         recordingSearch_ = edit("", 210, 1);
         SendMessageW(recordingSearch_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(uiText("search.recordings")));
         button("button.play", 211, 1); button("button.refresh", 214, 1);
+        button("directory.sync", 230, 1);
         localizedControl(L"STATIC", "recordings.context_hint", SS_LEFT | SS_ENDELLIPSIS, 632, 1);
         recordings_ = list(610, 1, {{"column.time", 150}, {"column.title", 160}, {"column.direction", 58}, {"column.contact", 170}, {"column.duration", 64}, {"column.quality", 125}, {"column.source", 120}, {"column.size", 76}});
         playerSeek_ = control(TRACKBAR_CLASSW, L"", WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 218, 1);
@@ -299,7 +315,7 @@ private:
             if (child.id >= 100 && child.id <= 104) {
                 int row = child.id - 100;
 #ifdef _WIN64
-                if (child.id >= 102) row += 2;
+                if (child.id >= 102) row += 3;
 #endif
                 #ifdef _WIN64
                 move(child.window,14,118+row*46,148,40);
@@ -310,6 +326,7 @@ private:
 #ifdef _WIN64
             if (child.id == 107) move(child.window,14,210,148,40);
             if (child.id == 109) move(child.window,14,256,148,40);
+            if (child.id == 108) move(child.window,14,302,148,40);
 #endif
             if (child.id == 902) move(child.window, 14, h - 88, 148, 34);
             if (child.id == 502) move(child.window, left, 460, 240, 34);
@@ -334,7 +351,8 @@ private:
         const bool reportTopic = SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5;
         move(helpTopic_, left, 110, reportTopic ? available - 430 : available, 240); move(GetDlgItem(window_, 804), w - 442, 110, 246, 32); move(GetDlgItem(window_, 805), w - 184, 110, 160, 32); move(helpText_, left, 158, available, h - 200);
         move(recent_, left, 534, available, h - 576);
-        move(recordingSearch_, left, 110, available, 32);
+        move(recordingSearch_, left, 110, available - 170, 32);
+        move(GetDlgItem(window_, 230), w - 184, 110, 160, 32);
         const int recordingActions[] = {211, 214};
         const int recordingWidths[] = {88, 98};
         int actionLeft = left;
@@ -393,6 +411,8 @@ private:
 #ifdef _WIN64
         SpeechPage::place(left, 110, available, h - 134, dpi_);
         if (SpeechPage::instance()) ShowWindow(SpeechPage::instance(), (page_ == 6 || page_ == 8) ? SW_SHOW : SW_HIDE);
+        AiPage::place(left,110,available,h-134,dpi_);
+        if (AiPage::instance()) ShowWindow(AiPage::instance(),page_==7?SW_SHOW:SW_HIDE);
 #endif
         InvalidateRect(window_, NULL, FALSE);
     }
@@ -503,6 +523,7 @@ private:
 #ifdef _WIN64
         RedrawWindow(GetDlgItem(window_, 107), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
         RedrawWindow(GetDlgItem(window_,109),NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+        RedrawWindow(GetDlgItem(window_, 108), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
 #endif
     }
 
@@ -736,8 +757,8 @@ private:
         drawText(dc, uiText("app.subtitle"), 21, 62, 150, 42, RGB(153, 175, 202), smallFont_, DT_LEFT | DT_TOP | DT_WORDBREAK);
         drawText(dc, uiText("field.language"), 14, height() - 164, 148, 22, RGB(153, 175, 202), smallFont_);
         drawText(dc, L"v" + utf8ToWide(kProductVersion), 21, height() - 42, versionLabelWidth(dc) + 4, 22, RGB(153, 175, 202), smallFont_);
-        const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help", "nav.updates", "speech.module_live", "app.title", "speech.module_history"};
-        const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle", "update.subtitle", "speech.module_live_subtitle", "app.subtitle", "speech.module_history_subtitle"};
+        const char* titles[] = {"nav.overview", "nav.recordings", "nav.diagnostics", "nav.settings", "nav.help", "nav.updates", "speech.module_live", "ai.title", "speech.module_history"};
+        const char* subtitles[] = {"overview.subtitle", "recordings.subtitle", "diagnostics.subtitle", "settings.subtitle", "help.subtitle", "update.subtitle", "speech.module_live_subtitle", "ai.subtitle", "speech.module_history_subtitle"};
         drawText(dc, uiText(titles[page_]), 200, 22, width() - 430, 40, RGB(23, 40, 65), titleFont_);
         drawText(dc, uiText(subtitles[page_]), 200, 66, width() - 224, 25, RGB(100, 116, 139), font_);
         const auto state = diagnosticSnapshot();
@@ -887,7 +908,7 @@ private:
             return;
         }
         const bool tab = id >= 432 && id <= 434;
-        const bool nav = (id >= 100 && id <= 105) || id == 107 || id == 109 || id == 902, active = (id >= 100 && id <= 105 && id - 100 == page_) || (id == 109 && page_ == 8) || (id == 107 && page_ == 6) || (tab && id - 432 == settingsGroup_);
+        const bool nav = (id >= 100 && id <= 105) || id == 107 || id == 108 || id == 109 || id == 902, active = (id >= 100 && id <= 105 && id - 100 == page_) || (id == 109 && page_ == 8) || (id == 107 && page_ == 6) || (id == 108 && page_ == 7) || (tab && id - 432 == settingsGroup_);
         const bool disabled = (item->itemState & ODS_DISABLED) != 0, pressed = (item->itemState & ODS_SELECTED) != 0;
         COLORREF fill = nav ? active ? RGB(43, 105, 230) : RGB(20, 32, 51) : id == 500 || id == 420 || (tab && active) ? RGB(43, 105, 230) : RGB(255, 255, 255);
         if (pressed) fill = nav || id == 500 || id == 420 ? RGB(29, 79, 180) : RGB(232, 239, 250);
@@ -1101,7 +1122,15 @@ private:
         AppendMenuW(menu, MF_STRING | (selected && !analysisWorker_.joinable() ? 0 : MF_GRAYED), 213, uiText("button.analyse"));
 #ifdef _WIN64
         AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+        bool savedCaptions = false;
+        if (selected) {
+            wchar_t absolute[32768]{};
+            if (GetFullPathNameW(utf8ToWide(selectedFile()).c_str(), static_cast<DWORD>(std::size(absolute)), absolute, NULL))
+                savedCaptions = GetFileAttributesW((wstring(absolute) + L".transcript.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
+        }
+        AppendMenuW(menu, MF_STRING | (savedCaptions ? 0 : MF_GRAYED), 226, uiText("speech.open_live"));
         AppendMenuW(menu, flags, 225, uiText("speech.module_history"));
+        AppendMenuW(menu, flags, 231, uiText("ai.analyze"));
 #endif
         const UINT action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, point.x, point.y, 0, window_, NULL);
         DestroyMenu(menu);
@@ -1232,8 +1261,8 @@ private:
 
 #ifdef _WIN64
     /// Navigate to the embedded speech page; retain the main shell and ordinary sidebar selection.
-    void openSpeech(const wstring& wav = L"@live") {
-        HWND child = SpeechPage::show(window_, wav, dpi_);
+    void openSpeech(const wstring& wav = L"@live", bool savedLive = false) {
+        HWND child = SpeechPage::show(window_, wav, dpi_, savedLive);
         if (!child) return;
         controls_.erase(std::remove_if(controls_.begin(), controls_.end(), [](const Control& item) { return item.id == 960; }), controls_.end());
         const int page=wav==L"@live"?6:8;
@@ -1245,13 +1274,22 @@ private:
     /// Dispatch user operations without running network requests on the GUI thread.
     void command(int id) {
 #ifdef _WIN64
+        if (id == 108 || id == 231) {
+            wstring wav;
+            if(id==231) {const string file=selectedFile();if(file.empty())return;wchar_t path[32768]{};GetFullPathNameW(utf8ToWide(file).c_str(),32768,path,NULL);wav=path;}
+            HWND child=AiPage::show(window_,wav,dpi_);
+            if(child) {controls_.erase(std::remove_if(controls_.begin(),controls_.end(),[](const Control& c){return c.id==961;}),controls_.end());controls_.push_back({child,7,961,""});switchPage(7);}return;
+        }
         if(id==107){openSpeech(L"@live");return;}
         if(id==109){openSpeech(L"");return;}
-        if (id == 225) {
+        if (id == 225 || id == 226) {
             const string path = selectedFile();
             if (path.empty()) return;
             wchar_t absolute[32768]{}; GetFullPathNameW(utf8ToWide(path).c_str(), static_cast<DWORD>(std::size(absolute)), absolute, NULL);
-            openSpeech(absolute);
+            if (id == 226 && GetFileAttributesW((wstring(absolute) + L".transcript.txt").c_str()) == INVALID_FILE_ATTRIBUTES) {
+                MessageBoxW(window_, uiText("speech.live_missing"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return;
+            }
+            openSpeech(absolute, id == 226);
             return;
         }
 #endif
@@ -1277,6 +1315,10 @@ private:
         if (id == 216) { const bool ok = player_.playing() ? player_.pause() : player_.play(); if (!ok) showPlayerError(); else updatePlayer(); return; }
         if (id == 217) { if (!player_.stop()) showPlayerError(); else updatePlayer(); return; }
         if (id == 214) { refreshRecordings(true); return; }
+        if (id == 230) {
+            if (!g_commands.enqueue("directory")) MessageBoxW(window_, uiText("directory.unavailable"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
         if (id == 221) { renameRecording(); return; }
         if (id == 215) { openFolder(true); return; }
         if (id == 312) { copyReport(); return; }
@@ -1393,9 +1435,9 @@ private:
         refreshUpdates(true);
     }
 
-    /// Create an owned small icon with a solid arrow badge; alpha remains readable on either theme.
-    HICON createUpdateIcon() {
-        const int width = GetSystemMetrics(SM_CXSMICON), height = GetSystemMetrics(SM_CYSMICON);
+    /// Paint one opaque badge over the product icon without altering the shared resource icon.
+    HICON createBadgedIcon(bool alert, bool smallSize) {
+        const int width = GetSystemMetrics(smallSize ? SM_CXSMICON : SM_CXICON), height = GetSystemMetrics(smallSize ? SM_CYSMICON : SM_CYICON);
         BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -height;
         info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
         HDC dc = CreateCompatibleDC(NULL); DWORD* pixels = NULL;
@@ -1408,12 +1450,48 @@ private:
         for (int y = 0; y < badge; ++y) for (int x = 0; x < badge; ++x) {
             const int dx = x - center, dy = y - center;
             if (dx * dx + dy * dy > center * center) continue;
-            const bool arrow = (y >= badge / 4 && y <= badge / 2 && abs(dx) <= y - badge / 4) || (abs(dx) <= std::max(1, badge / 10) && y >= badge / 3 && y < badge * 4 / 5);
-            pixels[(top + y) * width + left + x] = arrow ? 0xffffffff : 0xff087fbd;
+            bool mark = false;
+            if (!alert) mark = (y >= badge / 4 && y <= badge / 2 && abs(dx) <= y - badge / 4) || (abs(dx) <= std::max(1, badge / 10) && y >= badge / 3 && y < badge * 4 / 5);
+            else {
+                const int thickness = std::max(1, badge / 7);
+                const bool stem = abs(dx) <= thickness && y >= badge / 5 && y <= badge * 3 / 5;
+                const bool dot = abs(dx) <= thickness && y >= badge * 7 / 10 && y <= badge * 17 / 20;
+                mark = stem || dot;
+            }
+            pixels[(top + y) * width + left + x] = mark ? 0xffffffff : (alert ? 0xffd1242f : 0xff087fbd);
         }
         SelectObject(dc, previous);
         ICONINFO icon{}; icon.fIcon = TRUE; icon.hbmColor = color; icon.hbmMask = mask;
         HICON result = CreateIconIndirect(&icon); DeleteObject(color); DeleteObject(mask); DeleteDC(dc); return result;
+    }
+
+    /// Create the small update arrow used by the notification area.
+    HICON createUpdateIcon() { return createBadgedIcon(false, true); }
+
+    /// Show the red exclamation while the current DHCP target cannot accept a recording.
+    void applyTrayIcon(bool updateAvailable) {
+        const bool alert = recordingAddressUnavailable(diagnosticSnapshot());
+        if (alert && !alertIcon_) alertIcon_ = createBadgedIcon(true, true);
+        if (alert && !alertIconLarge_) alertIconLarge_ = createBadgedIcon(true, false);
+        HICON icon = applicationIcon(true);
+        wstring tip = L"PhoneRecord " + utf8ToWide(kProductVersion);
+        if (alert && alertIcon_) { icon = alertIcon_; tip += L" — " + wstring(uiText("tray.address_unavailable")); }
+        else if (updateAvailable) {
+            if (!updateIcon_) updateIcon_ = createUpdateIcon();
+            if (updateIcon_) icon = updateIcon_;
+            const auto state = updates_.state();
+            tip += L" — " + wstring(uiText("update.available")) + L" " + utf8ToWide(state.manifest.version);
+        }
+        if (tray_.hIcon != icon || wstring(tray_.szTip) != tip) {
+            tray_.hIcon = icon; wcsncpy_s(tray_.szTip, tip.c_str(), _TRUNCATE);
+            tray_.uFlags = (tray_.uFlags & NIF_GUID) | NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            if (trayAdded_) Shell_NotifyIconW(NIM_MODIFY, &tray_);
+        }
+        if (window_ && alertShown_ != alert) {
+            alertShown_ = alert;
+            SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(alert && alertIconLarge_ ? alertIconLarge_ : applicationIcon(false)));
+            SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(alert && alertIcon_ ? alertIcon_ : applicationIcon(true)));
+        }
     }
 
     /// Refresh update controls and persistent tray availability; never performs a network request.
@@ -1433,19 +1511,15 @@ private:
             EnableWindow(GetDlgItem(window_, 820), !state.busy && !g_offline);
             EnableWindow(GetDlgItem(window_, 821), available && !state.busy && state.staged.empty() && !g_offline);
             SetWindowTextW(GetDlgItem(window_, 105), uiText(available ? "update.nav_available" : "nav.updates"));
-            if (available && !updateIcon_) updateIcon_ = createUpdateIcon();
-            tray_.hIcon = available && updateIcon_ ? updateIcon_ : applicationIcon(true);
-            const wstring tip = L"PhoneRecord " + utf8ToWide(kProductVersion) + (available ? L" — " + wstring(uiText("update.available")) + L" " + utf8ToWide(state.manifest.version) : L"");
-            wcsncpy_s(tray_.szTip, tip.c_str(), _TRUNCATE); tray_.uFlags = (tray_.uFlags & NIF_GUID) | NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            if (trayAdded_) Shell_NotifyIconW(NIM_MODIFY, &tray_);
             RedrawWindow(GetDlgItem(window_, 105), NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
         }
+        applyTrayIcon(available);
         refreshActionVisibility();
         const auto recording = diagnosticSnapshot();
         EnableWindow(GetDlgItem(window_, 822), !state.staged.empty() && !state.busy && !recording.callActive && g_sessionCount == 0 && g_activeRecordings == 0 && !recording.busy && !analysisWorker_.joinable() && !g_offline);
 #ifdef _WIN64
         const auto speech = g_speech.state();
-        if (speech.busy || speech.waiting) EnableWindow(GetDlgItem(window_, 822), FALSE);
+        if (speech.busy || speech.waiting || g_ai.state().busy) EnableWindow(GetDlgItem(window_, 822), FALSE);
 #endif
         if (available && !state.busy && !g_offline && preferences.balloons && preferences.notified != state.manifest.version &&
             lastUpdateBalloon_ != state.manifest.version && !recording.callActive && g_activeRecordings == 0 && trayAdded_ && !trayBalloonActive_ && GetTickCount64() >= nextBalloon_) {
@@ -1465,7 +1539,7 @@ private:
     void installUpdate() {
 #ifdef _WIN64
         const auto speech = g_speech.state();
-        if (speech.busy || speech.waiting) { MessageBoxW(window_, uiText("speech.update_busy"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
+        if (speech.busy || speech.waiting || g_ai.state().busy) { MessageBoxW(window_, uiText("speech.update_busy"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
 #endif
         const auto state = updates_.state();
         if (state.busy || state.staged.empty() || g_offline) return;
@@ -1477,7 +1551,7 @@ private:
             const auto recording = diagnosticSnapshot();
             busy = recording.callActive || recording.busy || g_sessionCount > 0 || g_activeRecordings > 0 || g_pendingCallEvents > 0 || analysisWorker_.joinable();
 #ifdef _WIN64
-            const auto currentSpeech = g_speech.state(); busy = busy || currentSpeech.busy || currentSpeech.waiting > 0;
+            const auto currentSpeech = g_speech.state(); busy = busy || currentSpeech.busy || currentSpeech.waiting > 0 || g_ai.state().busy;
 #endif
             if (!busy) g_updateInstalling = true;
         }
@@ -1574,9 +1648,8 @@ private:
                 if (renameDialog_) EndDialog(renameDialog_, IDCANCEL);
                 PostMessageW(window_, WM_COMMAND, 902, 0); return 0;
             }
-            #ifdef _WIN64
-            const auto liveSpeech = g_speech.state();
-            if (liveSpeech.liveEnabled && liveSpeech.recording && liveSpeech.liveWav != lastLiveSpeech_) { lastLiveSpeech_ = liveSpeech.liveWav; openSpeech(L"@live"); }
+#ifdef _WIN64
+            LiveCaptionOverlay::tick(window_, dpi_);
 #endif
             const auto state = diagnosticSnapshot();
             const int sessions = static_cast<int>(g_sessionCount.load()), recordings = g_activeRecordings.load();
@@ -1589,6 +1662,8 @@ private:
             if (page_ == 4 && SendMessageW(helpTopic_, CB_GETCURSEL, 0, 0) == 5 && (inspection.revision != lastCompatRevision_ || compatibilityRuntimeVerified(inspection, state, sessions) != lastCompatRuntime_)) refreshHelp();
             if (lastAddressRevision_ != g_phoneAddressRevision.load()) refreshAddressStatus();
             updatePlayer(); refreshLogs(false); refreshUpdates(); refreshPhoneSetup();
+            EnableWindow(GetDlgItem(window_, 230), !g_offline && !restartNeeded_ && !state.busy && !state.callActive && sessions == 0 && g_cfg.errors().empty() && !g_updateInstalling);
+            if (lastDirectory_ != g_directory.revision()) { lastDirectory_ = g_directory.revision(); if (page_ == 1) refreshRecordings(true); }
             if (state.files != lastFiles_) { lastFiles_ = state.files; if (page_ == 1) refreshRecordings(true); }
             return 0;
         }
@@ -1615,6 +1690,9 @@ private:
             else { ShowWindow(window_, SW_HIDE); balloon(uiText("message.minimized")); }
             return 0;
         case WM_DESTROY:
+#ifdef _WIN64
+            LiveCaptionOverlay::close();
+#endif
             if (localIpWorker_.joinable()) localIpWorker_.join();
             updates_.stop();
             player_.close();
@@ -1681,6 +1759,8 @@ private:
     std::vector<uint64_t> recentSequences_;
     /// Change markers prevent unnecessary rescans and log rebuilding.
     uint64_t lastLog_ = 0, lastFiles_ = 0;
+    /// Phone-directory updates refresh visible names without rewriting historical recordings.
+    uint64_t lastDirectory_ = 0;
     /// Last state update rendered in the overview.
     string lastChanged_;
     /// Session cleanup can finish after the last diagnostic update; repaint its idle transition too.
@@ -1718,4 +1798,8 @@ private:
     string lastUpdateBalloon_;
     /// Owned overlay icon, independent of the shared application icon.
     HICON updateIcon_ = NULL;
+    /// Owned red-exclamation icons. The shared product icon is never destroyed here.
+    HICON alertIcon_ = NULL, alertIconLarge_ = NULL;
+    /// Last window-icon choice, so a health poll does not reset the icon every tick.
+    bool alertShown_ = false;
 };

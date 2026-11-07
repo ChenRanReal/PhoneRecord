@@ -44,7 +44,7 @@ public:
         remoteNumber_ = field("remote_number");
         direction_ = field("dir");
         name_ = field("remote_name");
-        if (name_.empty()) name_ = g_directory.lookup(remoteNumber_);
+        if (name_.empty() || directoryNumber(name_) == directoryNumber(remoteNumber_)) name_ = g_directory.lookup(remoteNumber_);
     }
 
     /// Stop and join before releasing the adopted socket.

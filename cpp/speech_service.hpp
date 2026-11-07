@@ -16,7 +16,7 @@ struct SpeechState {
     /// Current percentage and waiting file count.
     int percent = 0, waiting = 0;
     /// User preference and one owned process operation.
-    bool enabled = false, busy = false, installed = false, recording = false, liveEnabled = false;
+    bool enabled = false, busy = false, installed = false, recording = false, liveEnabled = false, historyEnabled = false;
     /// Model currently owning the shared worker or its last diagnostic.
     string operationModel;
     /// Last live recording identity is retained for viewing after hangup.
@@ -67,7 +67,10 @@ public:
         source_ = jsonField(saved, "source"); if (source_ != "hf-mirror.com") source_ = "huggingface.co";
         selectedModel_ = savedModel(jsonField(saved,"model"));
         state_.enabled = jsonField(saved, "enabled") == "1";
-        state_.liveEnabled = jsonField(saved,"liveEnabled").empty() ? state_.enabled : jsonField(saved,"liveEnabled") == "1";
+        const string liveField = jsonField(saved,"liveEnabled"), historyField = jsonField(saved,"historyEnabled");
+        state_.liveEnabled = liveField.empty() ? state_.enabled : liveField == "1";
+        state_.historyEnabled = !historyField.empty() ? historyField == "1" : state_.enabled && !state_.liveEnabled && !liveField.empty();
+        state_.enabled = state_.historyEnabled || state_.liveEnabled;
         liveLanguage_ = jsonField(saved,"liveLanguage"); if (!validLanguage(liveLanguage_)) liveLanguage_ = language_;
         liveSource_ = jsonField(saved,"liveSource") == "hf-mirror.com" ? "hf-mirror.com" : "huggingface.co";
         state_.installed = installed(selectedModel_);
@@ -103,7 +106,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.busy || (!validModel(model))) return;
         selectedModel_ = model; state_.installed = installed(model); savePreferences();
-        state_.step = state_.enabled ? !state_.failureCode.empty() ? state_.failureCode : state_.installed ? "standby" : "unprepared" : "off";
+        state_.step = state_.historyEnabled ? !state_.failureCode.empty() ? state_.failureCode : state_.installed ? "standby" : "unprepared" : state_.enabled ? state_.step : "off";
         ++state_.revision; wake_.notify_all();
     }
     /// Signal actual PCM arrival without running inference on the recorder thread.
@@ -140,8 +143,10 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (!validLanguage(language) || (source != "huggingface.co" && source != "hf-mirror.com")) return false;
         const bool live = keepLive ? state_.liveEnabled : enabled;
-        if (!write(config_, preferences(enabled,language,source,live))) return false;
-        state_.enabled = enabled; state_.liveEnabled = live; language_ = language; source_ = source;
+        const bool previousHistory = state_.historyEnabled;
+        state_.historyEnabled = enabled;
+        if (!write(config_, preferences(enabled || live,language,source,live))) { state_.historyEnabled = previousHistory; return false; }
+        state_.enabled = enabled || live; state_.liveEnabled = live; language_ = language; source_ = source;
         if (!enabled) { ++epoch_; install_ = false; livePending_ = false; queue_.clear(); persistQueue(false); state_.step = "off"; }
         else if (!state_.busy) state_.step = !state_.failureCode.empty() ? state_.failureCode : state_.installed ? "standby" : "unprepared";
         ++state_.revision;
@@ -154,10 +159,31 @@ public:
         if (!validLanguage(language) || (source != "huggingface.co" && source != "hf-mirror.com")) return false;
         const string oldLanguage = liveLanguage_, oldSource = liveSource_;
         liveLanguage_ = language; liveSource_ = source;
-        if (!write(config_,preferences(state_.enabled || enabled,language_,source_,enabled))) { liveLanguage_=oldLanguage; liveSource_=oldSource; return false; }
-        state_.liveEnabled = enabled; state_.enabled = state_.enabled || enabled;
+        if (!write(config_,preferences(state_.historyEnabled || enabled,language_,source_,enabled))) { liveLanguage_=oldLanguage; liveSource_=oldSource; return false; }
+        state_.liveEnabled = enabled; state_.enabled = state_.historyEnabled || enabled;
         if (!enabled) { livePending_=false; liveCancelled_=true; if (state_.recording && active_ == state_.liveWav && activeModel_ == "sense") ++epoch_; }
         if (enabled) launchThread(); ++state_.revision; wake_.notify_all(); return true;
+    }
+    /// History transcription is optional and never starts a download by itself.
+    bool configureHistory(bool enabled, const string& language, const string& source) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!validLanguage(language) || (source != "huggingface.co" && source != "hf-mirror.com")) return false;
+        const bool previous = state_.historyEnabled;
+        state_.historyEnabled = enabled;
+        const bool master = enabled || state_.liveEnabled;
+        if (!write(config_, preferences(master, language, source, state_.liveEnabled))) { state_.historyEnabled = previous; return false; }
+        state_.enabled = master; language_ = language; source_ = source;
+        if (!enabled) {
+            if (install_ && installModel_ != "sense") install_ = false;
+            const bool activeHistory = activeModel_ == "qwen" || activeModel_ == "qwen17";
+            if (state_.busy && activeHistory) { ++epoch_; state_.step = "cancelled"; }
+            queue_.erase(std::remove_if(queue_.begin(), queue_.end(), [](const Job& item) { return item.model != "sense"; }), queue_.end());
+            persistQueue(!activeHistory);
+            if (!state_.liveEnabled && !(state_.busy && activeHistory)) state_.step = "off";
+        } else if (!state_.busy) state_.step = !state_.failureCode.empty() ? state_.failureCode : state_.installed ? "standby" : "unprepared";
+        ++state_.revision;
+        if (state_.enabled) launchThread();
+        wake_.notify_all(); return true;
     }
     /// Read live-only language/source without affecting the Qwen defaults.
     string liveLanguage() const { std::lock_guard<std::mutex> lock(mutex_); return liveLanguage_; }
@@ -169,6 +195,7 @@ public:
         if (!state_.enabled || state_.busy || stopping_) return;
         installModel_ = model.empty() ? selectedModel_ : model;
         if (!validModel(installModel_)) return;
+        if ((installModel_ == "qwen" || installModel_ == "qwen17") && !state_.historyEnabled) return;
         installSource_ = source.empty() ? source_ : source;
         if (installSource_ != "huggingface.co" && installSource_ != "hf-mirror.com") return;
         install_ = true; launchThread(); wake_.notify_all();
@@ -179,6 +206,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         const string model = requestedModel.empty() ? selectedModel_ : requestedModel;
         if (!validModel(model)) return false;
+        if ((model == "qwen" || model == "qwen17") && !state_.historyEnabled) return false;
         if (!state_.enabled || stopping_ || queue_.size() >= 1000 || (active_ == wav && activeModel_ == model)) return false;
         for (const auto& item : queue_) if (item.wav == wav && item.model == model) return true;
         if (automatic && jsonField(read(wav + (resultSuffix(model) + L".json")), "status") == "complete") return true;
@@ -274,7 +302,7 @@ private:
     bool savePreferences() { return write(config_,preferences(state_.enabled,language_,source_,state_.liveEnabled)); }
     /// Serialize both modules together so editing either preserves the other's defaults.
     string preferences(bool enabled,const string& language,const string& source,bool live) const {
-        return "{\"enabled\":\"" + string(enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language) + ",\"source\":" + jsonQuoted(source) + ",\"model\":" + jsonQuoted(selectedModel_) + ",\"liveEnabled\":\"" + string(live ? "1" : "0") + "\",\"liveLanguage\":" + jsonQuoted(liveLanguage_) + ",\"liveSource\":" + jsonQuoted(liveSource_) + "}";
+        return "{\"enabled\":\"" + string(enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language) + ",\"source\":" + jsonQuoted(source) + ",\"model\":" + jsonQuoted(selectedModel_) + ",\"liveEnabled\":\"" + string(live ? "1" : "0") + "\",\"historyEnabled\":\"" + string(state_.historyEnabled ? "1" : "0") + "\",\"liveLanguage\":" + jsonQuoted(liveLanguage_) + ",\"liveSource\":" + jsonQuoted(liveSource_) + "}";
     }
     /// Check the exact provider-supported language set.
     static bool validLanguage(const string& value) { return value == "auto" || value == "zh" || value == "en" || value == "yue" || value == "ja" || value == "ko"; }

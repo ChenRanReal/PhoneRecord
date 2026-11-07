@@ -86,10 +86,23 @@ venv/
 # Local document renders and isolated validation builds.
 /tmp/
 
+# Optional speech preferences/queue may contain local recording identities.
+*.speech
+*.speech-queue
+
 # Current-account encrypted phone callback pairing state.
 *.pairing
 *.pairing.pending
 
-# Optional speech preferences/queue may contain local recording identities.
-*.speech
-*.speech-queue
+# Local AI profiles, call associations, prompts and analysis history.
+*.ai-profiles
+*.ai-profiles.pending
+*.ai-profiles.tests/
+*.ai-project.json
+*.ai-project.json.pending
+*.ai-latest.json
+*.ai-latest.json.pending
+*.ai-history/
+*.ai-profiles.tools/
+*.ai-profiles.models
+*.ai-profiles.models.pending

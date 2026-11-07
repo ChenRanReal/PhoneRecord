@@ -57,6 +57,7 @@ def resources() -> int:
     quoted = r'"(?:\\.|[^"\\])*"'
     expression = re.compile(r'^\s*\{(' + quoted + r'), L(' + quoted + r'), L(' + quoted + r'), L(' + quoted + r')\},$', re.M)
     content = (BASE / "cpp/ui_resources.hpp").read_text(encoding="utf-8")
+    content += "\n" + (BASE / "cpp/ai_resources.inc").read_text(encoding="utf-8")
     entries = expression.findall(content)
     assert len(entries) >= 216
     keys = set()

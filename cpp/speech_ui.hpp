@@ -5,14 +5,18 @@
 class SpeechPage {
 public:
     /// A live sentinel opens SenseVoice; an ordinary path opens historical Qwen transcription.
-    static HWND show(HWND parent,const wstring& wav,int dpi) {
+    /// savedLive opens that recording's already saved live-caption text.
+    static HWND show(HWND parent,const wstring& wav,int dpi,bool savedLive=false) {
         const bool live = wav == L"@live";
         if(instance()) {
             auto* page=reinterpret_cast<SpeechPage*>(GetWindowLongPtrW(instance(),GWLP_USERDATA));
-            if(page && page->live_ == live && (live || wav.empty() || page->wav_ == wav)) { page->refresh(true); return instance(); }
+            if(page && page->live_ == live && (live || wav.empty() || page->wav_ == wav)) {
+                if(!live && savedLive) page->showSavedLive();
+                page->refresh(true); return instance();
+            }
             DestroyWindow(instance());
         }
-        auto* self=new SpeechPage; self->live_=live; self->wav_=live ? g_speech.state().liveWav : wav; self->dpi_=dpi;
+        auto* self=new SpeechPage; self->live_=live; self->savedLive_=!live && savedLive; self->wav_=live ? g_speech.state().liveWav : wav; self->dpi_=dpi;
         WNDCLASSEXW type{}; type.cbSize=sizeof(type); type.hInstance=GetModuleHandleW(NULL); type.lpfnWndProc=procedure;
         type.lpszClassName=L"PhoneRecordSpeechPage"; type.hCursor=LoadCursorW(NULL,IDC_ARROW); RegisterClassExW(&type);
         HWND result=CreateWindowExW(WS_EX_CONTROLPARENT,type.lpszClassName,L"",WS_CHILD|WS_CLIPCHILDREN,0,0,1,1,parent,reinterpret_cast<HMENU>(960),type.hInstance,self);
@@ -25,7 +29,9 @@ public:
         if(!instance())return;
         auto* self=reinterpret_cast<SpeechPage*>(GetWindowLongPtrW(instance(),GWLP_USERDATA)); if(!self)return;
         if(self->dpi_!=dpi){self->dpi_=dpi;self->fonts();}
-        MoveWindow(instance(),self->px(x),self->px(y),self->px(w),self->px(h),TRUE);self->layout();
+        RECT next{self->px(x),self->px(y),self->px(x+w),self->px(y+h)};RECT current{};GetWindowRect(instance(),&current);
+        POINT origin{current.left,current.top};ScreenToClient(GetParent(instance()),&origin);
+        if(origin.x!=next.left||origin.y!=next.top||(current.right-current.left)!=(next.right-next.left)||(current.bottom-current.top)!=(next.bottom-next.top)){MoveWindow(instance(),next.left,next.top,next.right-next.left,next.bottom-next.top,TRUE);self->layout();}
     }
 private:
     /// Translate the shell's logical design grid into native device pixels.
@@ -51,7 +57,7 @@ private:
     /// Settings always occupy the left card; the selected task's text occupies the right card.
     void layout() {
         const int w=width(),h=height(),left=248,right=w-left-32;
-        move(1,28,22,204,44); move(44,28,22,204,44);
+        move(1,28,22,204,44); move(45,28,22,204,44);
         move(40,28,82,204,22); move(8,28,108,204,180); move(41,28,108,204,28);
         move(42,28,150,204,22);move(2,28,176,204,200);
         move(43,28,218,204,22);move(3,28,244,204,150);
@@ -62,7 +68,7 @@ private:
         move(30,left+20,live_?68:128,right-32,std::max(80,h-(live_?140:200)));
         move(10,left+20,68,right-32,std::max(80,h-140));
         move(31,left+20,h-52,148,36);move(32,w-188,h-52,160,36);move(11,w-188,h-52,160,36);
-        InvalidateRect(window_,NULL,FALSE);
+        if(w!=laidWidth_||h!=laidHeight_){laidWidth_=w;laidHeight_=h;InvalidateRect(window_,NULL,FALSE);}
     }
     /// Draw one localized text block using the same palette as the surrounding desktop page.
     void text(HDC dc, const wstring& value, int x, int y, int w, int h, COLORREF color, HFONT font, UINT flags = DT_LEFT | DT_WORDBREAK | DT_NOPREFIX) {
@@ -132,7 +138,8 @@ private:
             SendMessageW(enabled_,BM_SETCHECK,g_speech.state().liveEnabled?BST_CHECKED:BST_UNCHECKED,0);
             control(L"STATIC",L"SenseVoiceSmall · INT8",0,41);
         } else {
-            control(L"STATIC",uiText("speech.history_manual"),0,44);
+            enabled_=control(L"BUTTON",uiText("speech.history_enable"),WS_TABSTOP|BS_AUTOCHECKBOX|BS_MULTILINE,45);
+            SendMessageW(enabled_,BM_SETCHECK,g_speech.state().historyEnabled?BST_CHECKED:BST_UNCHECKED,0);
             HWND model=control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,8);
             for(const wchar_t* label:{L"Qwen3-ASR 0.6B",L"Qwen3-ASR 1.7B"})SendMessageW(model,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));
             SendMessageW(model,CB_SETCURSEL,g_speech.model()=="qwen17"?1:0,0);
@@ -140,7 +147,8 @@ private:
             control(L"BUTTON",uiText("button.refresh"),WS_TABSTOP|BS_OWNERDRAW,36);
             HWND versions=control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,34);
             for(const char* key:{"speech.saved_sense","speech.saved_qwen","speech.saved_qwen17"})SendMessageW(versions,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText(key)));
-            resultModel_=provider();SendMessageW(versions,CB_SETCURSEL,resultModel_=="qwen17"?2:1,0);recordings();
+            if(savedLive_) resultModel_="sense"; else resultModel_=provider();
+            SendMessageW(versions,CB_SETCURSEL,resultModel_=="qwen17"?2:resultModel_=="qwen"?1:0,0);recordings();
             control(L"BUTTON",uiText("speech.history_start"),WS_TABSTOP|BS_OWNERDRAW,32);
         }
         control(L"STATIC",uiText(live_?"speech.module_model":"speech.history_model"),0,40);
@@ -160,11 +168,17 @@ private:
         control(L"BUTTON",uiText("speech.copy"),WS_TABSTOP|BS_OWNERDRAW,31);control(L"BUTTON",uiText("speech.copy_diagnostics"),WS_TABSTOP|BS_OWNERDRAW,11);
         SetTimer(window_,1,200,NULL);refresh(true);layout();
     }
+    /// Show the SenseVoice sidecar saved beside this recording.
+    void showSavedLive() {
+        savedLive_=true; resultModel_="sense"; transcriptStamp_=0;
+        if(HWND versions=GetDlgItem(window_,34)) SendMessageW(versions,CB_SETCURSEL,0,0);
+    }
     /// Persist only the settings for this module; setup remains a separate explicit action.
     bool configure() {
         const int selected=static_cast<int>(SendMessageW(language_,CB_GETCURSEL,0,0));if(selected<0||selected>=6)return false;
         const string source=SendMessageW(source_,CB_GETCURSEL,0,0)==1?"hf-mirror.com":"huggingface.co";
-        const bool ok=live_?g_speech.configureLive(SendMessageW(enabled_,BM_GETCHECK,0,0)==BST_CHECKED,languages_[selected],source):g_speech.configure(true,languages_[selected],source,true);
+        const bool on=SendMessageW(enabled_,BM_GETCHECK,0,0)==BST_CHECKED;
+        const bool ok=live_?g_speech.configureLive(on,languages_[selected],source):g_speech.configureHistory(on,languages_[selected],source);
         if(!live_&&ok)g_speech.selectModel(provider());
         if(!ok)localError_=uiText("speech.save_failed");refresh(true);return ok;
     }
@@ -177,7 +191,7 @@ private:
     void refresh(bool force=false) {
         if(locale_!=g_uiLanguage.load()) {
             locale_=g_uiLanguage.load();force=true;
-            const std::map<int,const char*> labels={{1,"speech.live_enable"},{44,"speech.history_manual"},{40,"speech.module_model"},{42,"speech.language"},{43,"speech.source"},{4,"speech.module_install"},{5,"speech.module_stop"},{9,"speech.failure_details"},{12,"speech.hardware_button"},{31,"speech.copy"},{32,"speech.history_start"},{36,"button.refresh"},{11,"speech.copy_diagnostics"}};
+            const std::map<int,const char*> labels={{1,"speech.live_enable"},{45,"speech.history_enable"},{40,"speech.module_model"},{42,"speech.language"},{43,"speech.source"},{4,"speech.module_install"},{5,"speech.module_stop"},{9,"speech.failure_details"},{12,"speech.hardware_button"},{31,"speech.copy"},{32,"speech.history_start"},{36,"button.refresh"},{11,"speech.copy_diagnostics"}};
             for(const auto& label:labels)if(HWND control=GetDlgItem(window_,label.first))SetWindowTextW(control,uiText(label.second));
             SetWindowTextW(GetDlgItem(window_,40),uiText(live_?"speech.module_model":"speech.history_model"));
             if(!live_){HWND versions=GetDlgItem(window_,34);const LRESULT version=SendMessageW(versions,CB_GETCURSEL,0,0);SendMessageW(versions,CB_RESETCONTENT,0,0);for(const char* key:{"speech.saved_sense","speech.saved_qwen","speech.saved_qwen17"})SendMessageW(versions,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText(key)));SendMessageW(versions,CB_SETCURSEL,version,0);}
@@ -191,23 +205,24 @@ private:
         if(failure&&failureRevision_!=state.revision){if(lastFailure_!=state.failureCode+state.detail){details_=true;advice_=false;lastFailure_=state.failureCode+state.detail;}failureRevision_=state.revision;}
         if(force||revision_!=state.revision) {
             revision_=state.revision;
-            EnableWindow(install_,!state.busy);EnableWindow(cancel_,g_speech.pendingFor(provider()));
+            EnableWindow(install_,(live_||state.historyEnabled)&&!state.busy);EnableWindow(cancel_,g_speech.pendingFor(provider()));
             for(int id:{2,3,8})EnableWindow(GetDlgItem(window_,id),!state.busy);
-            EnableWindow(GetDlgItem(window_,32),!wav_.empty()&&!state.recording&&!state.busy);
+            EnableWindow(GetDlgItem(window_,32),state.historyEnabled&&!wav_.empty()&&!state.recording&&!state.busy);
             ShowWindow(GetDlgItem(window_,9),failure?SW_SHOW:SW_HIDE);
             SetWindowTextW(install_,uiText(g_speech.readyFor(provider())?"speech.module_repair":"speech.module_install"));
             SetWindowTextW(GetDlgItem(window_,9),uiText(details_?"speech.back_text":"speech.failure_details"));
             SetWindowTextW(GetDlgItem(window_,12),uiText(advice_?"speech.back_text":"speech.hardware_button"));
         }
         const bool panel=details_||advice_;
-        ShowWindow(viewer_,panel?SW_HIDE:SW_SHOW);ShowWindow(detail_,panel?SW_SHOW:SW_HIDE);
-        ShowWindow(GetDlgItem(window_,31),panel?SW_HIDE:SW_SHOW);ShowWindow(GetDlgItem(window_,11),details_?SW_SHOW:SW_HIDE);
-        if(!live_)for(int id:{32,34,35,36})ShowWindow(GetDlgItem(window_,id),panel?SW_HIDE:SW_SHOW);
+        const auto reveal=[&](HWND child,bool visible){if(!child)return;const bool shown=(GetWindowLongW(child,GWL_STYLE)&WS_VISIBLE)!=0;if(shown!=visible)ShowWindow(child,visible?SW_SHOW:SW_HIDE);};
+        reveal(viewer_,!panel);reveal(detail_,panel);reveal(GetDlgItem(window_,31),!panel);reveal(GetDlgItem(window_,11),details_);
+        if(!live_)for(int id:{32,34,35,36})reveal(GetDlgItem(window_,id),!panel);
         if(panel){const wstring report=advice_?hardware():failureText(state);if(report!=shownDetail_){shownDetail_=report;SetWindowTextW(detail_,report.c_str());}}
         WIN32_FILE_ATTRIBUTE_DATA data{};const bool exists=!wav_.empty()&&GetFileAttributesExW(resultPath(L".txt").c_str(),GetFileExInfoStandard,&data);
         const uint64_t stamp=(static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime)<<32)|data.ftLastWriteTime.dwLowDateTime;
         if(force||stamp!=transcriptStamp_){transcriptStamp_=stamp;const string next=exists?SpeechService::read(resultPath(L".txt")):"";if(force||next!=shownText_){shownText_=next;const LRESULT first=SendMessageW(viewer_,EM_GETFIRSTVISIBLELINE,0,0);SetWindowTextW(viewer_,next.empty()?uiText(live_?"speech.live_empty":"speech.history_empty"):transcriptText().c_str());if(live_){SendMessageW(viewer_,EM_SETSEL,-1,-1);SendMessageW(viewer_,EM_SCROLLCARET,0,0);}else SendMessageW(viewer_,EM_LINESCROLL,0,first);}}
-        InvalidateRect(window_,NULL,FALSE);
+        const bool liveState=state.liveEnabled||state.recording;
+        if(force||lastPaintRevision_!=state.revision||lastPaintPanel_!=panel||lastPaintLive_!=liveState||lastPaintError_!=localError_){lastPaintRevision_=state.revision;lastPaintPanel_=panel;lastPaintLive_=liveState;lastPaintError_=localError_;InvalidateRect(window_,NULL,FALSE);}
     }
     /// Paint a compact readiness summary; lengthy setup facts stay in the inline diagnostics panel.
     void paint(HDC external=NULL) {
@@ -217,7 +232,7 @@ private:
         surface(dc,12,8,236,h-24);surface(dc,260,8,w-272,h-24);
         const bool owns=state.busy&&state.operationModel==provider();
         const bool failed=!state.failureCode.empty()&&(state.operationModel.empty()||state.operationModel==provider());
-        const wstring status=!localError_.empty()?localError_:failed?uiText(("speech."+state.failureCode).c_str()):owns?uiText(("speech."+state.step).c_str()):uiText(ready?"speech.module_ready":"speech.module_needed");
+        const wstring status=!localError_.empty()?localError_:failed?uiText(("speech."+state.failureCode).c_str()):owns?uiText(("speech."+state.step).c_str()):uiText(!live_&&!state.historyEnabled?"speech.history_off":ready?"speech.module_ready":"speech.module_needed");
         text(dc,status,28,428,204,std::max(44,h-530),failed?RGB(171,58,40):RGB(68,88,114),small_);
         if(owns){RECT track{px(28),px(414),px(232),px(418)};HBRUSH base=CreateSolidBrush(RGB(222,229,240));FillRect(dc,&track,base);DeleteObject(base);track.right=px(28+std::max(3,state.percent)*204/100);HBRUSH bar=CreateSolidBrush(RGB(43,105,230));FillRect(dc,&track,bar);DeleteObject(bar);}
         text(dc,uiText(advice_?"speech.hardware_button":details_?"speech.failure_details":live_?"speech.live_title":"speech.history_choose"),280,20,w-308,26,RGB(31,51,77),font_);
@@ -275,8 +290,11 @@ private:
         }
         case WM_COMMAND: {
             const int id=LOWORD(wparam);const bool changed=HIWORD(wparam)==CBN_SELCHANGE;
-            if(id==1||((id==2||id==3||id==8)&&changed))self->configure();
-            if(id==4){if(self->configure()){if(!g_speech.state().enabled)g_speech.configure(true,g_speech.language(),g_speech.source(),true);g_speech.prepare(self->provider(),self->live_?g_speech.liveSource():g_speech.source());}}
+            if(id==1||id==45||((id==2||id==3||id==8)&&changed))self->configure();
+            if(id==4){
+                if(!self->live_ && !g_speech.state().historyEnabled)self->localError_=uiText("speech.history_off");
+                else if(self->configure()){if(self->live_ && !g_speech.state().enabled)g_speech.configure(true,g_speech.language(),g_speech.source(),true);g_speech.prepare(self->provider(),self->live_?g_speech.liveSource():g_speech.source());}
+            }
             if(id==5)g_speech.cancelModel(self->provider());
             if(id==9){self->details_=!self->details_;self->advice_=false;}
             if(id==12){self->advice_=!self->advice_;self->details_=false;}
@@ -285,7 +303,8 @@ private:
             if(id==34&&changed){const int i=static_cast<int>(SendMessageW(GetDlgItem(window,34),CB_GETCURSEL,0,0));self->resultModel_=i==2?"qwen17":i==1?"qwen":"sense";self->transcriptStamp_=0;}
             if(id==31)self->copyText(self->transcriptText());if(id==11)self->copyText(self->failureText(g_speech.state()));
             if(id==32&&self->configure()){
-                if(!g_speech.readyFor(self->provider()))self->localError_=uiText("speech.module_needed");
+                if(!g_speech.state().historyEnabled)self->localError_=uiText("speech.history_off");
+                else if(!g_speech.readyFor(self->provider()))self->localError_=uiText("speech.module_needed");
                 else {self->resultModel_=self->provider();SendMessageW(GetDlgItem(window,34),CB_SETCURSEL,self->resultModel_=="qwen17"?2:1,0);if(!g_speech.enqueue(self->wav_,false,self->resultModel_))self->localError_=uiText("speech.admission_failed");else self->localError_.clear();}
             }
             self->refresh(true);return 0;
@@ -298,11 +317,103 @@ private:
     HWND window_=NULL,enabled_=NULL,language_=NULL,source_=NULL,install_=NULL,cancel_=NULL,viewer_=NULL,detail_=NULL;
     HFONT font_=NULL,small_=NULL;HBRUSH white_=NULL;
     /// Task identity, inline auxiliary panel and persistent file-version selection.
-    bool live_=false,details_=false,advice_=false;
-    int dpi_=96,locale_=-1;unsigned ramGiB_=0,cpuThreads_=0;
-    uint64_t revision_=static_cast<uint64_t>(-1),failureRevision_=0,transcriptStamp_=0;
-    wstring wav_,shownDetail_,localError_;string shownText_,resultModel_="sense",lastFailure_;
+    bool live_=false,savedLive_=false,details_=false,advice_=false;
+    int dpi_=96,locale_=-1,laidWidth_=0,laidHeight_=0;unsigned ramGiB_=0,cpuThreads_=0;
+    uint64_t revision_=static_cast<uint64_t>(-1),failureRevision_=0,transcriptStamp_=0,lastPaintRevision_=static_cast<uint64_t>(-1);
+    /// Last painted summary, so the 200ms poll does not redraw both speech pages when nothing changed.
+    bool lastPaintPanel_=false,lastPaintLive_=false;
+    wstring wav_,shownDetail_,localError_,lastPaintError_;string shownText_,resultModel_="sense",lastFailure_;
     std::vector<wstring> files_;
     const char* languages_[6]={"auto","zh","en","yue","ja","ko"};
+};
+
+/// Screen-corner captions while a call is recording. Finished segments stay in the recording's transcript file.
+class LiveCaptionOverlay {
+public:
+    /// Show the latest saved text without activating or navigating the main window.
+    static void tick(HWND owner, int dpi) {
+        const auto state = g_speech.state();
+        const bool active = owner && state.liveEnabled && state.recording && !state.liveWav.empty();
+        if (!active) { if (window_) ShowWindow(window_, SW_HIDE); return; }
+        if (wav_ != state.liveWav) { wav_ = state.liveWav; stamp_ = 0; text_.clear(); if (edit_) SetWindowTextW(edit_, uiText("speech.live_empty")); }
+        ensure(dpi);
+        const wstring file = wav_ + L".transcript.txt";
+        WIN32_FILE_ATTRIBUTE_DATA info{};
+        uint64_t stamp = 0;
+        if (GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &info))
+            stamp = (static_cast<uint64_t>(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
+        if (stamp != stamp_) {
+            stamp_ = stamp;
+            wstring next = utf8ToWide(stamp ? SpeechService::read(file, 256 * 1024) : "");
+            if (next.size() > 8000) next.erase(0, next.size() - 8000);
+            if (next != text_) {
+                text_ = std::move(next);
+                SetWindowTextW(edit_, text_.empty() ? uiText("speech.live_empty") : text_.c_str());
+                const int length = GetWindowTextLengthW(edit_);
+                SendMessageW(edit_, EM_SETSEL, length, length);
+                SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
+            }
+        }
+        place(owner, dpi);
+    }
+    /// Remove the corner window when the desktop window closes.
+    static void close() {
+        if (window_) DestroyWindow(window_);
+        window_ = edit_ = title_ = icon_ = NULL; wav_.clear(); text_.clear(); stamp_ = 0;
+        if (font_) { DeleteObject(font_); font_ = NULL; }
+        if (brush_) { DeleteObject(brush_); brush_ = NULL; }
+    }
+private:
+    /// Paint the card without taking keyboard focus.
+    static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+        if (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT) {
+            SetBkColor(reinterpret_cast<HDC>(wparam), RGB(255, 255, 255));
+            SetTextColor(reinterpret_cast<HDC>(wparam), message == WM_CTLCOLORSTATIC ? RGB(15, 23, 42) : RGB(30, 41, 59));
+            return reinterpret_cast<LRESULT>(brush_);
+        }
+        if (message == WM_DESTROY) { window_ = edit_ = title_ = icon_ = NULL; return 0; }
+        return DefWindowProcW(window, message, wparam, lparam);
+    }
+    /// Create the topmost tool window once, and refresh its font when DPI changes.
+    static void ensure(int dpi) {
+        if (window_ && dpi_ == dpi) return;
+        if (!window_) {
+            WNDCLASSEXW type{}; type.cbSize = sizeof(type); type.lpfnWndProc = procedure; type.hInstance = GetModuleHandleW(NULL);
+            type.lpszClassName = L"PhoneRecordLiveCaption"; type.hCursor = LoadCursorW(NULL, IDC_ARROW);
+            RegisterClassExW(&type); brush_ = CreateSolidBrush(RGB(255, 255, 255));
+            window_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, type.lpszClassName, L"PhoneRecord", WS_POPUP | WS_BORDER, 0, 0, 0, 0, NULL, NULL, type.hInstance, NULL);
+            const int iconPixels = GetSystemMetrics(SM_CXSMICON);
+            HICON icon = reinterpret_cast<HICON>(LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_PHONERECORD), IMAGE_ICON, iconPixels, iconPixels, LR_SHARED));
+            if (!icon) icon = LoadIconW(NULL, IDI_APPLICATION);
+            SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+            SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_PHONERECORD), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED)));
+            icon_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ICON, 0, 0, 0, 0, window_, reinterpret_cast<HMENU>(3), type.hInstance, NULL);
+            SendMessageW(icon_, STM_SETIMAGE, IMAGE_ICON, reinterpret_cast<LPARAM>(icon));
+            title_ = CreateWindowExW(0, L"STATIC", (L"PhoneRecord  ·  " + wstring(uiText("speech.module_live"))).c_str(), WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, 0, 0, 0, 0, window_, reinterpret_cast<HMENU>(1), type.hInstance, NULL);
+            edit_ = CreateWindowExW(0, L"EDIT", uiText("speech.live_empty"), WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 0, 0, window_, reinterpret_cast<HMENU>(2), type.hInstance, NULL);
+        }
+        if (font_) DeleteObject(font_);
+        dpi_ = dpi;
+        font_ = CreateFontW(-MulDiv(15, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft JhengHei UI");
+        SendMessageW(title_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    }
+    /// Keep the box at the working area's lower-right corner on the main window's monitor.
+    static void place(HWND owner, int dpi) {
+        HMONITOR monitor = MonitorFromWindow(owner, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO info{sizeof(info)}; if (!GetMonitorInfoW(monitor, &info)) return;
+        const int width = MulDiv(420, dpi, 96), height = MulDiv(168, dpi, 96), margin = MulDiv(20, dpi, 96), pad = MulDiv(12, dpi, 96), titleHeight = MulDiv(28, dpi, 96);
+        const int iconSize = GetSystemMetrics(SM_CXSMICON);
+        SetWindowPos(window_, HWND_TOPMOST, info.rcWork.right - width - margin, info.rcWork.bottom - height - margin, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        MoveWindow(icon_, pad, pad + (titleHeight - iconSize) / 2, iconSize, iconSize, TRUE);
+        MoveWindow(title_, pad + iconSize + MulDiv(8, dpi, 96), pad, width - pad * 2 - iconSize - MulDiv(8, dpi, 96), titleHeight, TRUE);
+        MoveWindow(edit_, pad, pad + titleHeight, width - pad * 2 - GetSystemMetrics(SM_CXVSCROLL), height - pad * 2 - titleHeight, TRUE);
+    }
+    static inline HWND window_ = NULL, edit_ = NULL, title_ = NULL, icon_ = NULL;
+    static inline HFONT font_ = NULL;
+    static inline HBRUSH brush_ = NULL;
+    static inline int dpi_ = 0;
+    static inline uint64_t stamp_ = 0;
+    static inline wstring wav_, text_;
 };
 #endif

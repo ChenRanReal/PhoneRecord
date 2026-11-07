@@ -39,6 +39,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         const wstring argument = arguments[index];
         if (argument == L"--config" && index + 1 < count) config = absoluteStartupPath(arguments[++index]);
         else if (argument == L"--offline") g_offline = true;
+        else if (argument == L"--open" && index + 1 < count && _wcsicmp(arguments[index + 1], L"live") == 0) { g_openLivePage = true; ++index; }
         else if (argument == L"--headless") headless = true;
         else if (argument == L"--startup") startup = true;
         else if (argument == L"--update-ack" && index + 1 < count) {
@@ -115,6 +116,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     g_directory.reload();
 #ifdef _WIN64
     g_speech.start(g_configPath);
+    g_ai.start(g_configPath);
 #endif
     const auto invalid = g_cfg.errors();
     std::unique_ptr<HttpServer> events;
@@ -127,6 +129,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         if (controlReady && eventReady && !g_offline && g_cfg.hookPort > 0)
             g_commands.enqueue("compatibility", "startup");
         else g_commands.enqueue("local");
+        if (!g_offline && g_cfg.hookPort == 0 && controlReady && eventReady) g_commands.enqueue("directory", "startup");
         if (g_offline && controlReady && eventReady) diagnosticStage(RecordingStage::Waiting, "OFFLINE_MODE");
     } else {
         diagnosticStage(RecordingStage::Failed, exists ? "CONFIG_INVALID" : "CONFIG_MISSING", invalid.empty() ? "" : invalid.front());
@@ -159,6 +162,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
             if (!exists || !invalid.empty()) SendMessageW(window, WM_COMMAND, 103, 0);
             const bool background = startup && exists && invalid.empty() && view.hasTrayIcon();
             ShowWindow(window, background ? SW_HIDE : startup ? SW_SHOWNOACTIVATE : show); UpdateWindow(window);
+#ifdef _WIN64
+            if (g_openLivePage && !background) SendMessageW(window, WM_COMMAND, 107, 0);
+#endif
             if (updateAck) {
                 const bool acknowledged = SetEvent(updateAck) != FALSE; CloseHandle(updateAck); updateAck = NULL;
                 if (acknowledged) { std::lock_guard<std::mutex> guard(g_updateAdmission); g_updateStartupPending = false; }
@@ -184,6 +190,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     if (g_recorder) { g_recorder->shutdown(); g_recorder.reset(); }
 #ifdef _WIN64
     g_speech.stop();
+    g_ai.stop();
 #endif
     LOGI("APP_STOP workers_joined=true");
     WSACleanup();

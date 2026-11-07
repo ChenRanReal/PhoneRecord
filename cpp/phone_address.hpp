@@ -167,12 +167,16 @@ static bool completePhonePairing(bool paired) {
     g_phonePairing = next; return true;
 }
 
-/// Constant-work credential comparison; a DHCP callback must authenticate even when its source IP is unchanged.
+/// Constant-work credential comparison. Hex digits are matched without regard to case.
 static bool authorizedPhoneCallback(const string& supplied) {
     std::lock_guard<std::mutex> guard(g_phonePairingMutex);
-    if (!g_phonePairing.paired || !validPairingToken(supplied) || !validPairingToken(g_phonePairing.token)) return false;
+    if (supplied.size() != 64 || !g_phonePairing.paired || !validPairingToken(g_phonePairing.token)) return false;
     unsigned difference = 0;
-    for (size_t i = 0; i < 64; ++i) difference |= static_cast<unsigned char>(supplied[i] ^ g_phonePairing.token[i]);
+    for (size_t i = 0; i < 64; ++i) {
+        unsigned char digit = static_cast<unsigned char>(supplied[i]);
+        if (digit >= 'A' && digit <= 'F') digit = static_cast<unsigned char>(digit - 'A' + 'a');
+        difference |= static_cast<unsigned char>(digit ^ static_cast<unsigned char>(g_phonePairing.token[i]));
+    }
     return difference == 0;
 }
 

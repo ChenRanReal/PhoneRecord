@@ -121,13 +121,16 @@ def main():
                 enable=USER.GetDlgItem(page,1);USER.SendMessageW(enable,0x00F1,1,0);USER.SendMessageW(page,0x0111,1,enable)
                 USER.SendMessageW(owner,0x0111,109,0);page=USER.GetDlgItem(owner,960)
                 assert USER.SendMessageW(USER.GetDlgItem(page,2),0x0147,0,0)==0
+                history=USER.GetDlgItem(page,45)
+                assert USER.SendMessageW(history,0x00F0,0,0)==0
+                USER.SendMessageW(history,0x00F1,1,0);USER.SendMessageW(page,0x0111,45,history)
                 choose(page,2,4);choose(page,8,1)
                 USER.SendMessageW(owner,0x0111,107,0);page=USER.GetDlgItem(owner,960)
                 assert USER.SendMessageW(USER.GetDlgItem(page,2),0x0147,0,0)==2
                 assert USER.SendMessageW(USER.GetDlgItem(page,3),0x0147,0,0)==1
                 enable=USER.GetDlgItem(page,1);USER.SendMessageW(enable,0x00F1,0,0);USER.SendMessageW(page,0x0111,1,enable)
                 settings=json.loads(Path(str(app.config)+'.speech').read_text('utf-8'))
-                assert settings['liveEnabled']=='0' and settings['enabled']=='1'
+                assert settings['liveEnabled']=='0' and settings['historyEnabled']=='1' and settings['enabled']=='1'
                 assert settings['liveLanguage']=='en' and settings['language']=='ja' and settings['model']=='qwen17'
                 assert not windows(app.process.pid,'PhoneRecordSpeechWindow')
             finally:app.shutdown()

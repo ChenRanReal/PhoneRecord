@@ -278,6 +278,10 @@ class FakePhone:
                                   f'<input name="SYS_RecordAddr_RW" value="\r\n{settings["server"]}\r\n">'
                                   f'<input name="SYS_RecordPort_RW" value="{owner.control_port if settings["control"] is None else settings["control"]}">')
                     self.answer(f'<script>var recordStatus = "{owner.state}";</script>' + fields)
+                elif self.path.startswith("/contacts.xml?"):
+                    self.answer("<contacts/>")
+                elif self.path.startswith("/calllog.xml?"):
+                    self.answer("<calllog/>")
                 elif self.path == "/action.htm":
                     if owner.compatibility["actions"] == "login":
                         self.answer('<div id="logon_content">login</div>')

@@ -3,10 +3,37 @@
 /// Serialized Fanvil web client preserving the device's existing challenge protocol.
 class PhoneClient {
 public:
+    /// Read only existing phone contacts and calllog names on the serialized idle worker.
+    bool syncDirectory() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (g_offline || !diagnosticSnapshot().authenticated) return false;
+        LOGI("DIRECTORY_SYNC_BEGIN");
+        std::map<string, string> local, history;
+        string head, body;
+        const auto read = [&](const char* path, bool fromHistory, std::map<string, string>& names) {
+            if (!request("GET", string(path) + "?now=" + std::to_string(GetTickCount64()), "", head, body, true)) return false;
+            if (loginPage(body) || head.find(" 401 ") != string::npos || head.find(" 403 ") != string::npos) {
+                diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; });
+                return false;
+            }
+            return head.find(" 200 ") != string::npos && parseDirectoryXml(body, fromHistory, names);
+        };
+        // Commit neither source if a read fails; a login page or broken response must not erase names.
+        if (!read("/contacts.xml", false, local) || !read("/calllog.xml", true, history)) {
+            LOGW("%s", requestDeferred_ ? "DIRECTORY_SYNC_DEFERRED" : "DIRECTORY_SYNC_FAILED");
+            return false;
+        }
+        for (const auto& item : local) history[item.first] = item.second;
+        const bool saved = g_directory.replacePhone(history);
+        LOGI("DIRECTORY_SYNC_OK contacts=%zu history=%zu total=%zu", local.size(), history.size() - local.size(), history.size());
+        if (!saved) LOGW("DIRECTORY_CACHE_FAILED");
+        return true;
+    }
+
     /// Configure only the supported network-recording profile after an explicit plan confirmation.
     PhoneSetupResult configurePhone(bool apply, const string& expectedPlan, const string& restorePath = "");
-    /// Authenticate once and verify a protected page; offline mode prohibits phone traffic.
-    bool login() {
+    /// Authenticate and verify a protected page; optional idle-only reads yield to incoming calls.
+    bool login(bool idleOnly = false) {
         std::lock_guard<std::mutex> guard(mutex_);
         if (g_offline) { LOGI("AUTH_SKIPPED offline=true"); return false; }
         readyObserved_ = 0;
@@ -20,14 +47,14 @@ public:
         if (g_cfg.secretError) return authFailure("CREDENTIAL_DECRYPT_FAILED");
         loadCookie();
         string head, body;
-        if (!request("GET", "/", "", head, body)) return authFailure("PHONE_UNREACHABLE");
+        if (!request("GET", "/", "", head, body, idleOnly)) return idleOnly && requestDeferred_ ? false : authFailure("PHONE_UNREACHABLE");
         if (head.find("503") != string::npos) return authFailure("PHONE_BUSY");
         string sessionCookie = headerValue(head, "Set-Cookie");
         const size_t auth = sessionCookie.find("auth=");
         if (auth == string::npos) sessionCookie.clear();
         else { sessionCookie = sessionCookie.substr(auth + 5); sessionCookie = sessionCookie.substr(0, sessionCookie.find(';')); }
         if (!sessionCookie.empty()) cookie_ = sessionCookie;
-        if (!request("GET", "/key==nonce?now=" + std::to_string(GetTickCount64()), "", head, body)) return authFailure("AUTH_NONCE_FAILED");
+        if (!request("GET", "/key==nonce?now=" + std::to_string(GetTickCount64()), "", head, body, idleOnly)) return idleOnly && requestDeferred_ ? false : authFailure("AUTH_NONCE_FAILED");
         if (head.find("503") != string::npos) return authFailure("PHONE_BUSY");
         if (loginPage(body)) return authFailure("AUTH_NONCE_FAILED");
         const string nonceBody = trim(body);
@@ -39,19 +66,19 @@ public:
         if (nonce.size() < 8) {
             // A successful request must enter the cache-validation branch. The previous
             // implementation tested !request(), then cleared an otherwise valid cookie.
-            if (!cookie_.empty() && request("GET", "/record.htm", "", head, body) && protectedPage(head, body)) {
+            if (!cookie_.empty() && request("GET", "/record.htm", "", head, body, idleOnly) && protectedPage(head, body)) {
                 rememberRecordState(body); saveCookie(); return authSuccess("AUTH_CACHE_VALID");
             }
-            return authFailure("AUTH_SESSION_INVALID");
+            return idleOnly && requestDeferred_ ? false : authFailure("AUTH_SESSION_INVALID");
         }
         cookie_ = nonce;
         const string digest = Md5::hex(g_cfg.phoneUser + ":" + g_cfg.phonePass + ":" + nonce);
         const string form = "encoded=" + urlEncode(g_cfg.phoneUser + ":" + digest) + "&CurLanguage=cn&ReturnPage=/";
-        if (!request("POST", "/", form, head, body)) return authFailure("AUTH_POST_FAILED");
+        if (!request("POST", "/", form, head, body, idleOnly)) return idleOnly && requestDeferred_ ? false : authFailure("AUTH_POST_FAILED");
         if (head.find("503") != string::npos) return authFailure("PHONE_BUSY");
         if (loginPage(body) || head.find("200") == string::npos) return authFailure("AUTH_REJECTED");
         if (!sessionCookie.empty()) cookie_ = sessionCookie;
-        if (!request("GET", "/record.htm", "", head, body) || !protectedPage(head, body)) return authFailure("AUTH_VERIFY_FAILED");
+        if (!request("GET", "/record.htm", "", head, body, idleOnly) || !protectedPage(head, body)) return idleOnly && requestDeferred_ ? false : authFailure("AUTH_VERIFY_FAILED");
         rememberRecordState(body);
         saveCookie();
         return authSuccess("AUTH_VERIFIED");
@@ -165,11 +192,17 @@ public:
             const bool est = compatibleCallback(established->second, "est"), end = compatibleCallback(ended->second, "end");
             callbacks = est && end;
             if (g_cfg.phoneAddressMode == "dhcp") {
-                const auto ready = actions.find("AURL_SetupCompleted_RW"), changed = actions.find("AURL_IpChange_RW");
-                const bool tracking = phonePaired() && ready != actions.end() && changed != actions.end() &&
-                    compatibleCallback(ready->second, "ready") && compatibleCallback(changed->second, "ip");
+                const auto acceptable = [&](const char* key, const char* event, bool& owned) {
+                    const auto field = actions.find(key);
+                    if (field == actions.end()) { owned = false; return true; }
+                    if (trim(field->second).empty()) return false;
+                    if (compatibleCallback(field->second, event)) return true;
+                    owned = false; return true;
+                };
+                bool owned = true;
+                const bool tracking = phonePaired() && acceptable("AURL_SetupCompleted_RW", "ready", owned) && acceptable("AURL_IpChange_RW", "ip", owned);
                 callbacks = callbacks && tracking;
-                add("address_callbacks", tracking ? "pass" : "fail", tracking ? "callback_ok" : "pairing_fix");
+                add("address_callbacks", tracking ? "pass" : "fail", !tracking ? "pairing_fix" : owned ? "callback_ok" : "address_kept");
             }
             add("established", est ? "pass" : "fail", est ? "callback_ok" : "callback_fix");
             add("terminated", end ? "pass" : "fail", end ? "callback_ok" : "callback_fix");

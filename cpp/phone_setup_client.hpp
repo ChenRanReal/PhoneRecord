@@ -62,9 +62,6 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
     }
 
     if (!ensurePhonePairingToken()) return finish("SETUP_PAIRING_SAVE_FAILED");
-    if (g_cfg.phoneAddressMode == "dhcp")
-        for (const char* key : {"AURL_SetupCompleted_RW", "AURL_IpChange_RW"})
-            if (!beforeActions.values.count(key)) return finish("SETUP_UNSUPPORTED");
     SetupForm afterRecord = beforeRecord, afterActions = beforeActions;
     afterRecord.values["EnableRecord_RW"] = "1"; afterRecord.values["CSE_RecordType_RW"] = "1";
     const string codec = toLower(beforeRecord.values["CSE_RecordVoiceCodec_R"]);
@@ -72,7 +69,16 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
     afterRecord.values["SYS_RecordAddr_RW"] = g_cfg.advertiseIp;
     afterRecord.values["SYS_RecordPort_RW"] = std::to_string(g_cfg.controlPort);
     std::vector<std::pair<string, string>> callbacks{{"AURL_CallEstablished_RW", "est"}, {"AURL_CallTerminated_RW", "end"}};
-    if (g_cfg.phoneAddressMode == "dhcp") { callbacks.push_back({"AURL_SetupCompleted_RW", "ready"}); callbacks.push_back({"AURL_IpChange_RW", "ip"}); }
+    // Startup and IP-change URLs are optional. Empty or already-owned values can be written;
+    // an existing foreign URL stays in place so one-click setup can still pair the call events.
+    if (g_cfg.phoneAddressMode == "dhcp") {
+        const std::pair<const char*, const char*> optionalCallbacks[] = {{"AURL_SetupCompleted_RW", "ready"}, {"AURL_IpChange_RW", "ip"}};
+        for (const auto& extra : optionalCallbacks) {
+            const auto existing = beforeActions.values.find(extra.first);
+            string target;
+            if (existing != beforeActions.values.end() && setupCallback(existing->second, extra.second, target)) callbacks.emplace_back(extra.first, extra.second);
+        }
+    }
     for (const auto& callback : callbacks) {
         string target;
         if (!setupCallback(beforeActions.values.at(callback.first), callback.second.c_str(), target)) return finish("SETUP_CALLBACK_CONFLICT");

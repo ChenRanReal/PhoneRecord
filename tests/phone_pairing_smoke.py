@@ -93,6 +93,7 @@ def main() -> int:
                 wait_for(lambda: "COMPATIBILITY_RESULT" in app.log(), 15)
                 assert callback(app.event, "", "ip") == 403
                 assert callback(app.event, "b" * 64, "est") == 403
+                assert callback(app.event, "", "ip", source="127.0.0.1") == 200
                 before = len(moved.requests)
                 previous_auth = app.log().count("AUTH_VERIFIED")
                 assert callback(app.event, token, "ip", extra="&ip=203.0.113.99") == 200
@@ -116,6 +117,23 @@ def main() -> int:
                 assert len(original.requests) == old_before
                 assert callback(app.event, token, "ready") == 200
             checks.append("restart restores last target and pairing; no old-address login, DNS or repeated MAC verification")
+    with tempfile.TemporaryDirectory(prefix="PhoneRecord-pairing-keep-") as folder, Phone() as reserved:
+        reserved.actions["AURL_SetupCompleted_RW"] = "https://example.test/setup"
+        reserved.actions["AURL_IpChange_RW"] = "https://example.test/ip-change"
+        kept = App(pathlib.Path(folder), args.exe.resolve(), output, "kept", phone_port=reserved.port, password="synthetic-setup", offline=False)
+        with kept.config.open("a", encoding="utf-8") as config:
+            config.write("phone_address_mode=dhcp\nphone_mac=02-AA-BB-CC-DD-01\nhealth_interval=0\n")
+        plan = command(kept, "--phone-setup-preview")
+        assert plan["code"] == "SETUP_PLAN_READY"
+        assert "AURL_SetupCompleted_RW" not in plan["changes"] and "AURL_IpChange_RW" not in plan["changes"]
+        result = command(kept, "--phone-setup-apply", "--setup-plan", plan["plan_id"])
+        assert result["code"] == "SETUP_VERIFIED" and result["applied"]
+        assert reserved.actions["AURL_SetupCompleted_RW"] == "https://example.test/setup"
+        assert reserved.actions["AURL_IpChange_RW"] == "https://example.test/ip-change"
+        for key, event in (("AURL_CallEstablished_RW", "est"), ("AURL_CallTerminated_RW", "end")):
+            query = parse_qs(urlsplit(reserved.actions[key]).query)
+            assert query["ev"] == [event] and len(query["pair"][0]) == 64
+        checks.append("existing startup and IP-change URLs stay unchanged while call callbacks gain pairing")
     (output / "pairing-results.json").write_text(json.dumps({"passed": checks, "real_phone_settings_changed": False}, indent=2) + "\n", encoding="utf-8")
     print(f"PHONE_PAIRING_SMOKE_OK checks={len(checks)}")
     return 0

@@ -12,6 +12,7 @@ IDI_PHONERECORD ICON "assets/phonerecord.ico"
 1904 RCDATA "speech/qwen-install.ps1"
 1905 RCDATA "speech/qwen-worker.py"
 1906 RCDATA "speech/qwen-assets.json"
+1910 RCDATA "ai_cli_worker.ps1"
 #endif
 
 IDD_RENAME_CALL DIALOGEX 0, 0, 340, 150

@@ -2,7 +2,7 @@
 
 # PhoneRecord — Call Recording Workbench
 
-The x64 development build adds optional [offline recording transcription](docs/離線錄音轉文字.md), disabled by default, with one-click local setup. SenseVoiceSmall INT8 updates text during calls; Qwen3-ASR 0.6B / 1.7B can retranscribe completed calls while retaining separate model results. Historical recordings can also be transcribed manually. The x86 build excludes this feature. Conversation summaries are not implemented.
+The x64 development build adds optional [offline recording transcription](docs/離線錄音轉文字.md), disabled by default, with one-click local setup. SenseVoiceSmall INT8 updates text during calls; Qwen3-ASR 0.6B／1.7B can retranscribe completed calls while retaining both versions. Historical recordings can also be transcribed manually. The x86 build excludes this feature. Optional [call AI analysis](docs/通話AI分析.md) links recordings to projects and combines transcripts through separately configured CLI tools and prompts. Selected content may be sent to the CLI provider.
 
 The current C++ desktop source version is **2.7.6**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
 Version 2.7.6 adds DHCP phone tracking: enter the current IP and MAC, save, restart, then run one-click setup. Later address changes follow callbacks without requiring a fixed IP.
@@ -37,6 +37,8 @@ If the login check passes but a connected call is not recorded, read [話機自�
 | Diagnostics (诊断中心) | Millisecond events and stable codes, item-by-item guidance, copy or export a report |
 | Settings (连接设置) | Positive-integer ports, per-field descriptions, save folder, health-check interval, close behavior, balloon notifications, and startup at sign-in |
 | Help & devices (帮助与适配) | Trilingual first-run help, generic callback templates, a read-only compatibility check, and a compatibility report that omits actual IP addresses |
+
+Phone contacts synchronize automatically after login while idle. Choose **Recordings → Sync phone contacts** to refresh names manually. Matching names appear for calls without a supplied name. See [Phone contact synchronization](docs/話機通訊錄同步.md) (Traditional Chinese).
 
 Tray balloons are off by default and can be turned on by the user. The check does not rewrite the phone, place a test call, or trigger recording. After settings match, a real call of about 20 seconds is still required, and both sides must be listened to.
 

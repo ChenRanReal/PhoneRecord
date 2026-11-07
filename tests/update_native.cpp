@@ -93,6 +93,57 @@ struct UpdateTrayFixture {
     }
 };
 
+/// Count one exact badge color in an owned icon. The shared product icon is not modified.
+static int iconPixels(HWND window, HICON icon, DWORD color) {
+    ICONINFO info{}; require(GetIconInfo(icon, &info) != FALSE, "owned alert icon");
+    BITMAP bitmap{}; GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap);
+    BITMAPINFO header{}; header.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); header.bmiHeader.biWidth = bitmap.bmWidth; header.bmiHeader.biHeight = -bitmap.bmHeight; header.bmiHeader.biPlanes = 1; header.bmiHeader.biBitCount = 32;
+    std::vector<DWORD> pixels(bitmap.bmWidth * bitmap.bmHeight); HDC dc = GetDC(window);
+    require(GetDIBits(dc, info.hbmColor, 0, bitmap.bmHeight, pixels.data(), &header, DIB_RGB_COLORS) != 0, "read alert icon pixels");
+    ReleaseDC(window, dc); DeleteObject(info.hbmColor); DeleteObject(info.hbmMask);
+    return static_cast<int>(std::count(pixels.begin(), pixels.end(), color));
+}
+
+/// DHCP address loss overrides the update arrow and clears again when the phone is usable.
+struct AddressAlertFixture {
+    /// Drive the real tray and window icons through health changes without contacting a phone.
+    static void run(const wstring& folder) {
+        g_configPath = folder + L"\\alert.ini"; g_offline = false; g_uiLanguage = 2; g_cfg.phoneAddressMode = "dhcp";
+        IN_ADDR address{}; require(InetPtonA(AF_INET, "192.0.2.20", &address) == 1, "synthetic phone address");
+        g_phoneResolved = address.S_un.S_addr;
+        diagnosticUpdate([](DiagnosticSnapshot& state) { state.phoneHealth.status = 0; state.phoneHealth.code.clear(); });
+        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        INITCOMMONCONTROLSEX common{sizeof(common), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_BAR_CLASSES}; InitCommonControlsEx(&common);
+        DesktopView view(96); WNDCLASSEXW type{}; type.cbSize = sizeof(type); type.lpfnWndProc = DesktopView::procedure; type.hInstance = GetModuleHandleW(NULL); type.lpszClassName = L"PhoneRecordAddressAlertFixture";
+        require(RegisterClassExW(&type) != 0, "alert UI class");
+        HWND window = CreateWindowExW(0, type.lpszClassName, L"PhoneRecord alert fixture", WS_OVERLAPPEDWINDOW, 0, 0, 980, 760, NULL, NULL, type.hInstance, &view);
+        require(window != NULL, "alert native window");
+        require(view.alertIcon_ == NULL && view.tray_.hIcon != NULL, "known DHCP address stays unmarked before the first health result");
+        diagnosticHealth(true, false, "PHONE_UNREACHABLE");
+        SendMessageW(window, WM_TIMER, 1, 0);
+        require(view.alertIcon_ != NULL && view.tray_.hIcon == view.alertIcon_, "unreachable DHCP target selects the red exclamation");
+        require(wstring(view.tray_.szTip).find(L"recording is unavailable") != wstring::npos, "tray tip explains that recording is unavailable");
+        require(iconPixels(window, view.alertIcon_, 0xffd1242f) > 8 && iconPixels(window, view.alertIcon_, 0xffffffff) > 0, "opaque red badge and white exclamation");
+        require(reinterpret_cast<HICON>(SendMessageW(window, WM_GETICON, ICON_BIG, 0)) == view.alertIconLarge_, "window icon uses the same warning");
+        diagnosticHealth(true, true, "PHONE_OK");
+        SendMessageW(window, WM_TIMER, 1, 0);
+        require(view.tray_.hIcon != view.alertIcon_ && !view.alertShown_, "reachable phone restores the normal icon");
+        g_phoneResolved = 0;
+        SendMessageW(window, WM_TIMER, 1, 0);
+        require(view.tray_.hIcon == view.alertIcon_, "missing DHCP address is unusable");
+        g_phoneResolved = address.S_un.S_addr;
+        diagnosticHealth(true, false, "AUTH_REJECTED");
+        SendMessageW(window, WM_TIMER, 1, 0);
+        require(view.tray_.hIcon != view.alertIcon_, "credential failure is not an address-change warning");
+        g_cfg.phoneAddressMode = "fixed"; g_phoneResolved = 0; diagnosticHealth(true, false, "PHONE_UNREACHABLE");
+        SendMessageW(window, WM_TIMER, 1, 0);
+        require(view.tray_.hIcon != view.alertIcon_, "fixed mode keeps its own address failure path");
+        ShowWindow(window, SW_HIDE); DestroyWindow(window); UnregisterClassW(type.lpszClassName, type.hInstance);
+        CoUninitialize();
+        g_cfg.phoneAddressMode = "fixed"; g_offline = true;
+    }
+};
+
 /// Exercise semantic versions, signed manifests, bounded I/O, live scheduling, caching and download integrity.
 int wmain(int count, wchar_t** args) {
     try {
@@ -225,7 +276,7 @@ int wmain(int count, wchar_t** args) {
             Sleep(200);
         }
         SetEnvironmentVariableW(L"PHONERECORD_UPDATE_TEST_PUBLIC_KEY", NULL);
-        if (count == 2) UpdateTrayFixture::run(folder, manifest, signature);
+        if (count == 2) { UpdateTrayFixture::run(folder, manifest, signature); AddressAlertFixture::run(folder); }
         for (const wchar_t* suffix : {L".updates", L".update-cache"}) DeleteFileW((config + suffix).c_str());
         puts("UPDATE_NATIVE_OK: versions, signatures, hashes, scheduling, resume, disabled/manual/offline, cache, rate limit, tampering, admission, real replacement and startup rollback");
         require(updateWrite(folder + L"\\native-success.txt", "UPDATE_NATIVE_OK\n"), "success evidence");

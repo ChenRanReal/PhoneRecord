@@ -368,7 +368,9 @@ static RecordStopFn  g_uiRecordStop  = NULL;
 
 // ===========================================================================
 #include "json_text.hpp"
+#include "directory_xml.hpp"
 #include "speech_service.hpp"
+#include "ai_analysis.hpp"
 #include "recording_titles.hpp"
 
 // 号码 -> 姓名
@@ -424,14 +426,56 @@ public:
             }
         }
         LOGI("号码目录已载入 %d 个号码", (int)names_.size());
+        // Phone cache is encrypted, scoped to this configured device and separate from manual files.
+        phoneNames_.clear();
+        std::ifstream cache(".phone_directory.dpapi", std::ios::binary);
+        string encoded, plain;
+        if (cache) {
+            cache.seekg(0, std::ios::end); const auto bytes = cache.tellg(); cache.seekg(0);
+            if (bytes > 0 && bytes <= 8 * 1024 * 1024) { encoded.resize(static_cast<size_t>(bytes)); cache.read(&encoded[0], static_cast<std::streamsize>(bytes)); }
+        }
+        if (encoded.compare(0, 6, "dpapi:") == 0 && unprotectLocalSecret(encoded, plain)) {
+            std::istringstream lines(plain); string identity, line;
+            std::getline(lines, identity);
+            if (identity == cacheIdentity()) while (std::getline(lines, line)) {
+                const size_t tab = line.find('\t');
+                if (tab == string::npos) continue;
+                size_t position = tab + 1; string name;
+                if (readJsonString(line, position, name)) phoneNames_[line.substr(0, tab)] = name;
+            }
+        }
+        ++revision_;
     }
 
     /// Resolve an exact number without placing contact details in diagnostic output.
     string lookup(const string& number) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = names_.find(number);
-        return it == names_.end() ? string() : it->second;
+        if (it != names_.end()) return it->second;
+        const string normalized = directoryNumber(number);
+        it = names_.find(normalized);
+        if (it != names_.end()) return it->second;
+        it = phoneNames_.find(normalized);
+        return it == phoneNames_.end() ? string() : it->second;
     }
+
+    /// Publish a complete successful phone snapshot, preserving all manually maintained names.
+    bool replacePhone(const std::map<string, string>& names) {
+        string plain = cacheIdentity() + "\n";
+        for (const auto& item : names) plain += item.first + "\t" + jsonQuoted(item.second) + "\n";
+        string encoded;
+        bool saved = protectLocalSecret(plain, encoded);
+        if (saved) {
+            std::ofstream output(".phone_directory.pending.dpapi", std::ios::binary | std::ios::trunc);
+            output << encoded; output.flush(); saved = static_cast<bool>(output); output.close();
+            if (saved) saved = MoveFileExW(L".phone_directory.pending.dpapi", L".phone_directory.dpapi", MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+        }
+        { std::lock_guard<std::mutex> lock(mutex_); phoneNames_ = names; ++revision_; }
+        return saved;
+    }
+
+    /// Return the publication generation so the recordings view rescans only on a change.
+    uint64_t revision() const { return revision_.load(); }
 
     void add(const string& number, const string& name) {
         {
@@ -458,6 +502,15 @@ public:
     }
 
 private:
+    /// Bind persistent names to the saved phone identity and web account without storing its password.
+    static string cacheIdentity() {
+        return g_cfg.phoneAddressMode + "|" + (g_cfg.phoneAddressMode == "fixed" ? g_cfg.phoneIp : g_cfg.phoneMac) +
+            "|" + std::to_string(g_cfg.phonePort) + "|" + g_cfg.phoneUser;
+    }
+    /// Successful phone data; manual names retain lookup priority.
+    std::map<string, string> phoneNames_;
+    /// Monotonic publication generation shared with the GUI.
+    std::atomic<uint64_t> revision_{0};
     std::map<string, string> names_;
     std::mutex mutex_;
 };
@@ -677,7 +730,7 @@ static std::vector<CallItem> scanRecordings() {
 
         const auto authoritative = ledger.find(item.file);
         if (authoritative != ledger.end()) { const auto& fields = authoritative->second; item.direction = fields[3]; item.local = fields[4]; item.remote = fields[5]; item.name = fields[6]; }
-        if (item.name.empty()) item.name = g_directory.lookup(item.remote);
+        if (item.name.empty() || directoryNumber(item.name) == directoryNumber(item.remote)) item.name = g_directory.lookup(item.remote);
         std::ifstream quality(utf8ToWide(g_cfg.recordDir + "\\" + item.file + ".quality.json"), std::ios::binary);
         char metadata[4097]{};
         quality.read(metadata, 4096);
@@ -685,7 +738,7 @@ static std::vector<CallItem> scanRecordings() {
         const string signal = jsonField(content, "quality");
         const string source = jsonField(content, "source");
         const string displayName = jsonField(content, "display_name");
-        if (!displayName.empty()) item.name = displayName;
+        if (!displayName.empty() && directoryNumber(displayName) != directoryNumber(item.remote)) item.name = displayName;
         if (!signal.empty()) item.quality = signal;
         if (!source.empty()) item.source = source;
         const auto title = readRecordingTitle(utf8ToWide(g_cfg.recordDir + "\\" + item.file));
