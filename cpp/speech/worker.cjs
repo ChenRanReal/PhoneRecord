@@ -4,6 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+/** Plain sibling of a recording, opened directly from the recordings folder. */
+function readableTranscript(wav) {
+  return wav.replace(/\.wav$/i, '') + '.live.txt';
+}
 /** Atomically publish UTF-8 metadata; never modify the source WAV. */
 function atomic(file, value) {
   const temp = file + '.' + crypto.randomBytes(8).toString('hex') + '.pending';
@@ -89,7 +93,12 @@ async function run(job, backend = models) {
       }
     } catch {}
     /** Commit only finished segments, retaining a resumable state after a killed worker. */
-    const save = () => { result.text = result.segments.map(s => s.text).filter(Boolean).join('\n'); atomic(textFile, result.text); atomic(output, JSON.stringify(result)); };
+    const save = () => {
+      result.text = result.segments.map(s => s.text).filter(Boolean).join('\n');
+      atomic(textFile, result.text);
+      atomic(readableTranscript(job.wav), '\uFEFF' + result.text.replace(/\n/g, '\r\n'));
+      atomic(output, JSON.stringify(result));
+    };
     save();
     let fed = 0, first = true;
     const ring = new Float32Array(34 * 16000);

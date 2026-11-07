@@ -56,6 +56,9 @@ test('8 kHz long WAV crosses DHS request limits without losing samples or rewrit
   assert.equal(result.sourceSha256, before); assert.equal(await require('../cpp/speech/worker.cjs').digest(file), before);
   assert.equal(JSON.parse(fs.readFileSync(progress)).step, 'complete');
   assert.match(fs.readFileSync(file + '.transcript.txt', 'utf8'), /測試結果/);
+  const plain = fs.readFileSync(file.replace(/\.wav$/i, '.live.txt'), 'utf8');
+  assert.equal(plain.charCodeAt(0), 0xFEFF);
+  assert.match(plain, /測試結果/);
 }));
 test('failed inference checkpoints complete segments and explicit retry skips them', async () => fixture(async root => {
   const file = path.join(root, 'partial.wav'); wav(file, 75);
@@ -95,6 +98,7 @@ test('live growing WAV publishes before hangup and drains the final tail without
   await new Promise(resolve => setTimeout(resolve,250));
   const partial = JSON.parse(fs.readFileSync(file + '.transcript.json'));
   assert.equal(partial.status,'running'); assert.ok(partial.segments.length >= 1);
+  assert.match(fs.readFileSync(file.replace(/\.wav$/i, '.live.txt'), 'utf8'), /測試結果/);
   assert.equal(partial.sourceSha256,'');
   fs.appendFileSync(file,pcm.subarray(32000));
   header.writeUInt32LE(pcm.length+36,4); header.writeUInt32LE(pcm.length,40);

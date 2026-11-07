@@ -76,6 +76,8 @@ class QwenWorkerTests(unittest.TestCase):
             self.assertEqual(result['status'],'complete')
             self.assertEqual(len(result['segments']),3)
             self.assertEqual(sense.read_text(),'Sense version')
+            plain = Path(str(wav)[:-4] + '.qwen.txt').read_text(encoding='utf-8-sig')
+            self.assertIn('Qwen resumed', plain)
             self.assertEqual(wav.read_bytes(),original)
 
 

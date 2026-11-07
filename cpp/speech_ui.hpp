@@ -220,7 +220,20 @@ private:
         if(panel){const wstring report=advice_?hardware():failureText(state);if(report!=shownDetail_){shownDetail_=report;SetWindowTextW(detail_,report.c_str());}}
         WIN32_FILE_ATTRIBUTE_DATA data{};const bool exists=!wav_.empty()&&GetFileAttributesExW(resultPath(L".txt").c_str(),GetFileExInfoStandard,&data);
         const uint64_t stamp=(static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime)<<32)|data.ftLastWriteTime.dwLowDateTime;
-        if(force||stamp!=transcriptStamp_){transcriptStamp_=stamp;const string next=exists?SpeechService::read(resultPath(L".txt")):"";if(force||next!=shownText_){shownText_=next;const LRESULT first=SendMessageW(viewer_,EM_GETFIRSTVISIBLELINE,0,0);SetWindowTextW(viewer_,next.empty()?uiText(live_?"speech.live_empty":"speech.history_empty"):transcriptText().c_str());if(live_){SendMessageW(viewer_,EM_SETSEL,-1,-1);SendMessageW(viewer_,EM_SCROLLCARET,0,0);}else SendMessageW(viewer_,EM_LINESCROLL,0,first);}}
+        if(force||stamp!=transcriptStamp_){
+            transcriptStamp_=stamp;const string next=exists?SpeechService::read(resultPath(L".txt")):"";
+            if(next!=shownText_){
+                shownText_=next;const LRESULT first=SendMessageW(viewer_,EM_GETFIRSTVISIBLELINE,0,0);
+                SetWindowTextW(viewer_,next.empty()?uiText(live_?"speech.live_empty":"speech.history_empty"):transcriptText().c_str());
+                if(live_){const int length=GetWindowTextLengthW(viewer_);SendMessageW(viewer_,EM_SETSEL,length,length);SendMessageW(viewer_,EM_SCROLLCARET,0,0);}
+                else SendMessageW(viewer_,EM_LINESCROLL,0,first);
+            }else if(force&&next.empty()){
+                const wchar_t* placeholder=uiText(live_?"speech.live_empty":"speech.history_empty");
+                const int length=GetWindowTextLengthW(viewer_);wstring current(static_cast<size_t>(length)+1,L'\0');
+                GetWindowTextW(viewer_,&current[0],length+1);current.resize(static_cast<size_t>(length));
+                if(current!=placeholder)SetWindowTextW(viewer_,placeholder);
+            }
+        }
         const bool liveState=state.liveEnabled||state.recording;
         if(force||lastPaintRevision_!=state.revision||lastPaintPanel_!=panel||lastPaintLive_!=liveState||lastPaintError_!=localError_){lastPaintRevision_=state.revision;lastPaintPanel_=panel;lastPaintLive_=liveState;lastPaintError_=localError_;InvalidateRect(window_,NULL,FALSE);}
     }
@@ -289,7 +302,10 @@ private:
             HGDIOBJ font=SelectObject(item->hDC,self->small_);RECT r=item->rcItem;DrawTextW(item->hDC,caption,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);SelectObject(item->hDC,font);if(item->itemState&ODS_FOCUS){InflateRect(&r,-3,-3);DrawFocusRect(item->hDC,&r);}return TRUE;
         }
         case WM_COMMAND: {
-            const int id=LOWORD(wparam);const bool changed=HIWORD(wparam)==CBN_SELCHANGE;
+            const UINT notify=HIWORD(wparam);
+            // Edit notifications are produced by our own text refresh. Handling them calls refresh again and overflows the UI stack.
+            if(notify==EN_SETFOCUS||notify==EN_KILLFOCUS||notify==EN_CHANGE||notify==EN_UPDATE||notify==EN_ERRSPACE||notify==EN_MAXTEXT||notify==EN_HSCROLL||notify==EN_VSCROLL)return 0;
+            const int id=LOWORD(wparam);const bool changed=notify==CBN_SELCHANGE;
             if(id==1||id==45||((id==2||id==3||id==8)&&changed))self->configure();
             if(id==4){
                 if(!self->live_ && !g_speech.state().historyEnabled)self->localError_=uiText("speech.history_off");

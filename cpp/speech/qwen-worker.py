@@ -12,6 +12,12 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 
+def readable_transcript(wav, variant):
+    """Plain sibling of the recording so the finished text opens in an editor."""
+    stem = wav[:-4] if str(wav).lower().endswith('.wav') else str(wav)
+    return stem + ('.qwen17.txt' if variant == '1.7B' else '.qwen.txt')
+
+
 def atomic(file, value):
     """Publish one complete result without modifying the source recording."""
     file = Path(file)
@@ -102,6 +108,7 @@ def run(job, factory=backend):
             """Keep each completed window durable in the selected model's own files."""
             result['text'] = '\n'.join(s['text'] for s in result['segments'] if s['text'])
             atomic(text_file, result['text'])
+            atomic(readable_transcript(wav, variant), '\ufeff' + result['text'].replace('\n', '\r\n'))
             atomic(output, json.dumps(result, ensure_ascii=False))
         save()
         while offset < frames:

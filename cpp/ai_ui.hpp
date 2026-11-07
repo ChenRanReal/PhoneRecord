@@ -47,7 +47,7 @@ private:
         return child;
     }
     /// Create a keyboard-accessible action with ordinary native focus behavior.
-    void button(int id,const char* key) {control(L"BUTTON",id,key,WS_TABSTOP|BS_PUSHBUTTON);}
+    void button(int id,const char* key) {control(L"BUTTON",id,key,WS_TABSTOP|BS_OWNERDRAW);}
     /// Create an editable field, optionally multiline with its own scroll range.
     void edit(int id,bool multi=false) {control(L"EDIT",id,nullptr,WS_TABSTOP|(multi?ES_MULTILINE|ES_AUTOVSCROLL|WS_VSCROLL:ES_AUTOHSCROLL));}
     /// Create a dropdown whose item identities are kept separately from display names.
@@ -103,15 +103,17 @@ private:
             combo(35);
             populate(30,"project");populate(31,"cli");populate(32,"prompt",false,true);
             if(!wav_.empty()) {const string bound=g_ai.binding(wav_);select(30,bound);unresolved_=!bound.empty()&&!g_ai.find(bound);defaults();latest();}
+            preferCli();
         } else {
-            combo(20);button(21,"ai.new");button(22,"ai.save");button(23,"ai.delete");control(L"STATIC",90,nullptr);
+            control(L"STATIC",110,"ai.saved_profile");combo(20);button(21,"ai.new");button(22,"ai.save");button(23,"ai.delete");control(L"STATIC",90,nullptr);
             control(L"STATIC",100,"ai.name");edit(60);
             if(mode_==1) {
                 control(L"LISTBOX",24,nullptr,WS_TABSTOP|LBS_NOTIFY|WS_VSCROLL|WS_BORDER);catalog();
                 control(L"STATIC",101,"ai.type");combo(61);for(const auto& tool:kAiCliTools)item(61,tool.id,tool.name);item(61,"stdin",uiText("ai.type.stdin"));select(61,"claude");
                 control(L"STATIC",102,"ai.executable");edit(62);button(71,"ai.browse");
-                control(L"STATIC",103,"ai.model");control(WC_COMBOBOXW,63,nullptr,WS_TABSTOP|CBS_DROPDOWN|WS_VSCROLL);control(L"STATIC",106,"ai.effort");combo(66);item(66,"",uiText("ai.inherit"));for(const char* effort:{"minimal","low","medium","high","xhigh","max"})item(66,effort,utf8ToWide(effort));select(66,"");control(L"STATIC",104,"ai.timeout_seconds");edit(64);set(64,"300");button(57,"ai.test");control(L"STATIC",105,"ai.lifecycle_help");
-                button(72,"ai.install_cli");button(73,"ai.refresh_models");button(74,"ai.login_cli");button(76,"ai.official_site");control(L"STATIC",108,nullptr);button(53,"ai.cancel");
+                control(L"STATIC",103,"ai.model");control(WC_COMBOBOXW,63,nullptr,WS_TABSTOP|CBS_DROPDOWN|WS_VSCROLL);control(L"STATIC",106,"ai.effort");combo(66);item(66,"",uiText("ai.inherit"));for(const char* effort:{"minimal","low","medium","high","xhigh","max"})item(66,effort,utf8ToWide(effort));select(66,"");control(L"STATIC",104,"ai.timeout_seconds");edit(64);set(64,"300");button(57,"ai.test");                control(L"STATIC",105,"ai.lifecycle_help");
+                button(72,"ai.install_cli");button(73,"ai.refresh_models");button(74,"ai.login_cli");button(77,"ai.custom_cli");button(76,"ai.official_site");control(L"STATIC",108,nullptr);button(53,"ai.cancel");
+                ShowWindow(GetDlgItem(window_,61),SW_HIDE);ShowWindow(GetDlgItem(window_,101),SW_HIDE);
             } else if(mode_==2) {
                 control(L"STATIC",102,"ai.folder");edit(62);button(71,"ai.browse");
                 control(L"STATIC",101,"ai.default_cli");combo(61);populate(61,"cli");
@@ -122,6 +124,25 @@ private:
             button(59,"ai.show_final");
         }
         locale_=g_uiLanguage.load();layout();refresh();
+    }
+    /// Leave “none” only when there is no saved CLI; a finished result prefers the profile that produced it.
+    void preferCli() {
+        if(mode_!=0 || !selected(31).empty() || ids_[31].size()<2) return;
+        if(!resultFiles_.empty()) {
+            const wstring meta=resultFiles_.front();
+            const auto slash=meta.find_last_of(L"\\/");
+            const wstring dir=slash==wstring::npos?L"":meta.substr(0,slash);
+            const string name=jsonField(SpeechService::read(dir+L"\\analysis.json",256*1024),"cliName");
+            if(!name.empty()) for(const string& id:ids_[31]) if(const auto* p=g_ai.find(id)) if(p->name==name) {select(31,id);return;}
+        }
+        select(31,ids_[31][1]);
+    }
+    /// Highlight the installed-tool row that matches the profile being edited.
+    void syncToolList() {
+        HWND list=GetDlgItem(window_,24);if(!list) return;
+        const string type=selected(61);
+        for(int index=0;index<static_cast<int>(std::size(kAiCliTools));++index) if(kAiCliTools[index].id==type) {SendMessageW(list,LB_SETCURSEL,index,0);return;}
+        SendMessageW(list,LB_SETCURSEL,static_cast<WPARAM>(-1),0);
     }
     /// Apply project defaults only when the user selects a project, keeping one-off overrides local.
     void defaults() {
@@ -137,6 +158,7 @@ private:
         set(60,p->name);set(62,p->path);
         if(mode_==1) {select(61,p->type);set(63,p->model);modelChoices(p->model);select(66,p->effort);set(64,std::to_string(p->timeout));}
         else {select(61,p->cli);select(63,p->prompt);SetWindowTextW(GetDlgItem(window_,64),display(p->body).c_str());SetWindowTextW(GetDlgItem(window_,65),display(p->references).c_str());}
+        if(mode_==1) syncToolList();
     }
     /// Read the active editor without mutating the persisted profile collection.
     AiProfile editor() const {
@@ -246,16 +268,17 @@ private:
         if((id==57||id==72||id==73||id==74) && !g_ai.enabled()){if(!g_ai.setEnabled(true)){notice("ai.save_failed");refresh();return;}SendMessageW(GetDlgItem(window_,15),BM_SETCHECK,BST_CHECKED,0);}
         if(id==51 && !g_ai.enabled()){notice("ai.disabled");refresh();return;}
         if(id>=10 && id<=13) {mode_=id-10;build();return;}
-        if(id==20 && notification==CBN_SELCHANGE)load();
+        if(id==20 && notification==CBN_SELCHANGE && static_cast<int>(SendMessageW(GetDlgItem(window_,20),CB_GETCURSEL,0,0))>=0) load();
         if(id==24 && notification==LBN_SELCHANGE) {
             const int index=static_cast<int>(SendMessageW(GetDlgItem(window_,24),LB_GETCURSEL,0,0));
-            if(index>=0 && index<static_cast<int>(std::size(kAiCliTools))){const auto& tool=kAiCliTools[index];editing_.clear();set(60,wideToUtf8(tool.name));select(61,tool.id);set(62,wideToUtf8(aiCliPath(tool.id)));set(63,"");modelChoices();ensureModels(false);}
+            if(index>=0 && index<static_cast<int>(std::size(kAiCliTools))){const auto& tool=kAiCliTools[index];editing_.clear();set(60,wideToUtf8(wstring(tool.name)));select(61,tool.id);set(62,wideToUtf8(aiCliPath(tool.id)));set(63,"");modelChoices();ensureModels(false);SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
         }
         if(id==61 && notification==CBN_SELCHANGE){set(62,wideToUtf8(aiCliPath(selected(61))));set(63,"");modelChoices();ensureModels(false);}
         if(id==35 && notification==CBN_SELCHANGE){const int index=static_cast<int>(SendMessageW(GetDlgItem(window_,35),CB_GETCURSEL,0,0));if(index>=0 && index<static_cast<int>(resultFiles_.size()))showResult(resultFiles_[index]);}
         if(id==59){mode_=0;build();return;}
         if(id==30 && notification==CBN_SELCHANGE) {unresolved_=false;defaults();}
-        if(id==21) {editing_.clear();for(int field:{60,62,63,64,65})set(field,"");if(mode_==1){set(64,"300");select(66,"");modelChoices();}select(20,"");}
+        if(id==21) {editing_.clear();for(int field:{60,62,63,64,65})set(field,"");if(mode_==1){set(64,"300");select(66,"");modelChoices();syncToolList();}SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
+        if(id==77) {editing_.clear();select(61,"stdin");set(60,wideToUtf8(uiText("ai.type.stdin")));set(62,"");set(63,"");set(64,"300");select(66,"");modelChoices();syncToolList();SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
         if(id==22) {auto p=editor();if(p.id.empty())p.id=AiAnalysis::identity();if(!g_ai.save(p)){notice("ai.profile_invalid");return;}const string identity=p.id;populate(20,p.kind,false,mode_==3);select(20,identity);load();notice("ai.saved");}
         if(id==23 && !editing_.empty()) {if(!g_ai.erase(editing_)){notice("ai.referenced");return;}editing_.clear();build();}
         if(id==71)browse();
@@ -322,18 +345,22 @@ private:
             const int buttons[]={51,52,53,54,55,56,58};for(int i=0;i<7;++i)move(buttons[i],12+i*(w-24)/7,250+y,(w-36)/7,32);
             move(90,12,292+y,w-24,38);move(35,12,330+y,w-24,220);move(80,12,370+y,w-24,std::max(80,h-410));
         } else {
-            move(20,12,44+y,w-310,240);move(21,w-286,44+y,80,30);move(22,w-198,44+y,88,30);move(23,w-102,44+y,90,30);
+            move(110,12,44+y,88,24);move(20,104,40+y,w-430,240);move(21,w-314,40+y,92,32);move(22,w-214,40+y,92,32);move(23,w-114,40+y,102,32);
             move(100,12,92+y,90,22);move(60,108,86+y,w-120,30);
             if(mode_==1) {
-                const int x=218,r=w-x-12;
-                move(24,12,44+y,194,std::max(80,h-128));move(20,x,44+y,r,220);move(100,x,88+y,82,22);move(60,x+88,82+y,r-88,30);
-                move(101,x,130+y,82,22);move(61,x+88,124+y,r-88,220);move(102,x,172+y,82,22);move(62,x+88,166+y,r-172,30);move(71,w-90,166+y,78,30);
-                move(103,x,214+y,82,22);move(63,x+88,208+y,r-88,200);move(106,x,256+y,82,22);move(66,x+88,250+y,(r-100)/2,200);move(104,x+96+(r-100)/2,256+y,62,22);move(64,w-68,250+y,56,30);
-                move(15,x,300+y,r,22);
-                const int actions[]={72,74,73,57};for(int i=0;i<4;++i)move(actions[i],x+i*r/4,328+y,(r-12)/4,32);
-                move(108,x,368+y,r,44);move(105,x,420+y,r,std::max(42,std::min(72,h-560)));
-                move(21,x,h-100,70,30);move(22,x+76,h-100,70,30);move(23,x+152,h-100,70,30);move(53,x+228,h-100,70,30);move(76,x+304,h-100,r-304,30);
-                move(59,x,h-62,r,26);
+                const int x=236,r=w-x-12;
+                move(24,12,78+y,210,std::max(120,h-150));
+                move(110,x,44+y,72,24);move(20,x+76,40+y,r-76,240);
+                move(21,x,82+y,(r-16)/3,32);move(22,x+(r-16)/3+8,82+y,(r-16)/3,32);move(23,x+((r-16)/3+8)*2,82+y,(r-16)/3,32);
+                move(100,x,124+y,82,22);move(60,x+88,118+y,r-88,30);
+                move(102,x,164+y,82,22);move(62,x+88,158+y,r-180,30);move(71,w-98,158+y,86,30);
+                move(103,x,206+y,82,22);move(63,x+88,200+y,r-88,220);
+                move(106,x,248+y,82,22);move(66,x+88,242+y,r-250,200);move(104,w-168,248+y,70,22);move(64,w-92,242+y,80,30);
+                move(15,x,286+y,r,22);
+                const int actions[]={72,74,73,57,77};for(int i=0;i<5;++i)move(actions[i],x+i*r/5,318+y,(r-16)/5,32);
+                move(108,x,360+y,r,40);move(105,x,406+y,r,std::max(48,std::min(84,h-520)));
+                move(53,x,h-78,120,32);move(76,x+132,h-78,r-132,32);
+                move(59,x,h-38,r,28);
             } else if(mode_==2) {
                 move(102,12,136+y,90,22);move(62,108,130+y,w-214,30);move(71,w-98,130+y,86,30);
                 move(101,12,180+y,90,22);move(61,108,174+y,half-96,180);move(103,half+24,180+y,100,22);move(63,half+128,174+y,half-104,180);
@@ -351,6 +378,10 @@ private:
             const int saved=SaveDC(dc);OffsetViewportOrgEx(dc,start.x,start.y,NULL);IntersectClipRect(dc,0,0,r.right-r.left,r.bottom-r.top);
             const int native=SaveDC(dc);SendMessageW(child,WM_PRINT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT|PRF_NONCLIENT|PRF_ERASEBKGND);RestoreDC(dc,native);
             wchar_t kind[32]{};GetClassNameW(child,kind,32);
+            if(wcscmp(kind,L"Button")==0 && (GetWindowLongW(child,GWL_STYLE)&BS_OWNERDRAW)) {
+                wchar_t caption[256]{};GetWindowTextW(child,caption,256);RECT input{0,0,r.right-r.left,r.bottom-r.top};
+                FillRect(dc,&input,white_);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(31,51,77));SelectObject(dc,font_);DrawTextW(dc,caption,-1,&input,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS);
+            }
             const bool combo=wcscmp(kind,L"ComboBox")==0,edit=wcscmp(kind,L"Edit")==0;
             if(combo || edit) {
                 wstring text;
@@ -368,21 +399,36 @@ private:
         if(message==WM_NCCREATE){self=static_cast<AiPage*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);self->window_=window;SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));}
         if(!self)return DefWindowProcW(window,message,wparam,lparam);
         switch(message) {
-        case WM_CREATE:self->font();self->white_=CreateSolidBrush(RGB(255,255,255));self->build();SetTimer(window,1,250,NULL);return 0;
+        case WM_CREATE:self->font();self->white_=CreateSolidBrush(RGB(255,255,255));self->page_=CreateSolidBrush(RGB(246,248,252));self->build();SetTimer(window,1,250,NULL);return 0;
         case WM_SIZE:self->layout();return 0;
-        case WM_COMMAND:self->command(LOWORD(wparam),HIWORD(wparam));return 0;
+        case WM_COMMAND:{
+            const UINT notify=HIWORD(wparam);
+            if(notify==EN_SETFOCUS||notify==EN_KILLFOCUS||notify==EN_CHANGE||notify==EN_UPDATE||notify==EN_ERRSPACE||notify==EN_MAXTEXT||notify==EN_HSCROLL||notify==EN_VSCROLL)return 0;
+            self->command(LOWORD(wparam),notify);return 0;
+        }
+        case WM_DRAWITEM:{
+            const auto* item=reinterpret_cast<DRAWITEMSTRUCT*>(lparam);if(item->CtlType!=ODT_BUTTON) break;
+            const bool tab=item->CtlID>=10 && item->CtlID<=13,primary=item->CtlID==22||item->CtlID==51||item->CtlID==72,selected=tab && item->CtlID-10==self->mode_,disabled=(item->itemState&ODS_DISABLED)!=0;
+            const COLORREF fill=disabled?RGB(226,230,236):primary?RGB(43,105,230):selected?RGB(255,255,255):RGB(236,240,246);
+            HBRUSH brush=CreateSolidBrush(fill);FillRect(item->hDC,&item->rcItem,brush);DeleteObject(brush);
+            if(!primary){HBRUSH edge=CreateSolidBrush(selected?RGB(43,105,230):RGB(209,219,234));FrameRect(item->hDC,&item->rcItem,edge);DeleteObject(edge);}
+            wchar_t caption[256]{};GetWindowTextW(item->hwndItem,caption,256);SetBkMode(item->hDC,TRANSPARENT);
+            SetTextColor(item->hDC,disabled?RGB(143,155,171):primary?RGB(255,255,255):selected?RGB(43,105,230):RGB(51,65,85));
+            HGDIOBJ old=SelectObject(item->hDC,self->font_);RECT text=item->rcItem;DrawTextW(item->hDC,caption,-1,&text,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS);SelectObject(item->hDC,old);return TRUE;
+        }
         case WM_TIMER:self->refresh();return 0;
         case WM_PRINT:self->print(reinterpret_cast<HDC>(wparam));return 0;
-        case WM_ERASEBKGND:{RECT r{};GetClientRect(window,&r);FillRect(reinterpret_cast<HDC>(wparam),&r,self->white_);return 1;}
-        case WM_CTLCOLORSTATIC:case WM_CTLCOLOREDIT:SetBkColor(reinterpret_cast<HDC>(wparam),RGB(255,255,255));SetTextColor(reinterpret_cast<HDC>(wparam),RGB(31,51,77));return reinterpret_cast<LRESULT>(self->white_);
-        case WM_NCDESTROY:KillTimer(window,1);instance()=NULL;SetWindowLongPtrW(window,GWLP_USERDATA,0);DeleteObject(self->font_);DeleteObject(self->white_);delete self;return 0;
+        case WM_ERASEBKGND:{RECT r{};GetClientRect(window,&r);FillRect(reinterpret_cast<HDC>(wparam),&r,self->page_);return 1;}
+        case WM_CTLCOLORSTATIC:SetBkColor(reinterpret_cast<HDC>(wparam),RGB(246,248,252));SetTextColor(reinterpret_cast<HDC>(wparam),RGB(51,65,85));return reinterpret_cast<LRESULT>(self->page_);
+        case WM_CTLCOLOREDIT:SetBkColor(reinterpret_cast<HDC>(wparam),RGB(255,255,255));SetTextColor(reinterpret_cast<HDC>(wparam),RGB(31,51,77));return reinterpret_cast<LRESULT>(self->white_);
+        case WM_NCDESTROY:KillTimer(window,1);instance()=NULL;SetWindowLongPtrW(window,GWLP_USERDATA,0);DeleteObject(self->font_);DeleteObject(self->white_);DeleteObject(self->page_);delete self;return 0;
         }
         return DefWindowProcW(window,message,wparam,lparam);
     }
     /// GUI-thread-owned page handles, DPI, category and refresh markers.
     HWND window_=NULL;
     HFONT font_=NULL;
-    HBRUSH white_=NULL;
+    HBRUSH white_=NULL,page_=NULL;
     int dpi_=96,mode_=0,locale_=-1;
     uint64_t revision_=static_cast<uint64_t>(-1);
     /// Stable combo identities never depend on translated captions.

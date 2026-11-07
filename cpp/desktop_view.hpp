@@ -59,6 +59,24 @@ static void desktopRecordingStopped() {
 }
 
 /// Product native desktop view; every control remains on the owning GUI thread.
+/// Recording path without the trailing .wav, used for the plain text sibling.
+static wstring recordingStem(const wstring& wav) {
+    return wav.size() >= 4 && _wcsnicmp(wav.c_str() + wav.size() - 4, L".wav", 4) == 0 ? wav.substr(0, wav.size() - 4) : wav;
+}
+/// First saved transcript a person can open, preferring the plain text sibling over the worker sidecar.
+static wstring openableTranscript(const wstring& wav, bool history) {
+    const wstring stem = recordingStem(wav);
+    const wstring candidates[] = {
+        history ? stem + L".qwen17.txt" : stem + L".live.txt",
+        history ? stem + L".qwen.txt" : wav + L".transcript.txt",
+        history ? wav + L".qwen3asr-1.7b.transcript.txt" : L"",
+        history ? wav + L".qwen3asr.transcript.txt" : L"",
+    };
+    for (const wstring& candidate : candidates)
+        if (!candidate.empty() && GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) return candidate;
+    return L"";
+}
+
 class DesktopView {
 #ifdef PHONERECORD_NETWORK_TESTING
     /// Exercise draft preservation and completion ordering without reading real adapters.
@@ -1122,14 +1140,20 @@ private:
         AppendMenuW(menu, MF_STRING | (selected && !analysisWorker_.joinable() ? 0 : MF_GRAYED), 213, uiText("button.analyse"));
 #ifdef _WIN64
         AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-        bool savedCaptions = false;
+        bool savedCaptions = false, liveFile = false, historyFile = false;
         if (selected) {
             wchar_t absolute[32768]{};
-            if (GetFullPathNameW(utf8ToWide(selectedFile()).c_str(), static_cast<DWORD>(std::size(absolute)), absolute, NULL))
-                savedCaptions = GetFileAttributesW((wstring(absolute) + L".transcript.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
+            if (GetFullPathNameW(utf8ToWide(selectedFile()).c_str(), static_cast<DWORD>(std::size(absolute)), absolute, NULL)) {
+                const wstring wav = absolute;
+                savedCaptions = GetFileAttributesW((wav + L".transcript.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
+                liveFile = !openableTranscript(wav, false).empty();
+                historyFile = !openableTranscript(wav, true).empty();
+            }
         }
         AppendMenuW(menu, MF_STRING | (savedCaptions ? 0 : MF_GRAYED), 226, uiText("speech.open_live"));
+        AppendMenuW(menu, MF_STRING | (liveFile ? 0 : MF_GRAYED), 227, uiText("speech.open_live_file"));
         AppendMenuW(menu, flags, 225, uiText("speech.module_history"));
+        AppendMenuW(menu, MF_STRING | (historyFile ? 0 : MF_GRAYED), 232, uiText("speech.open_history_file"));
         AppendMenuW(menu, flags, 231, uiText("ai.analyze"));
 #endif
         const UINT action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, point.x, point.y, 0, window_, NULL);
@@ -1290,6 +1314,16 @@ private:
                 MessageBoxW(window_, uiText("speech.live_missing"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return;
             }
             openSpeech(absolute, id == 226);
+            return;
+        }
+        if (id == 227 || id == 232) {
+            const string path = selectedFile();
+            if (path.empty()) return;
+            wchar_t absolute[32768]{}; GetFullPathNameW(utf8ToWide(path).c_str(), static_cast<DWORD>(std::size(absolute)), absolute, NULL);
+            const wstring document = openableTranscript(absolute, id == 232);
+            if (document.empty()) { MessageBoxW(window_, uiText("speech.file_missing"), L"PhoneRecord", MB_OK | MB_ICONINFORMATION); return; }
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", document.c_str(), NULL, NULL, SW_SHOWNORMAL)) <= 32)
+                MessageBoxW(window_, uiText("speech.file_open_failed"), L"PhoneRecord", MB_OK | MB_ICONWARNING);
             return;
         }
 #endif
