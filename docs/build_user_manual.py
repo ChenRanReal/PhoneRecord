@@ -58,7 +58,7 @@ def note(text):
     story.append(t)
 
 
-add('PHONERECORD 2.7.4  /  操作手冊  /  2026-11-06', 'small')
+add('PHONERECORD 2.7.5  /  操作手冊  /  2026-11-07', 'small')
 add('軟體設定', 'h1')
 add('左側「連接設定」分成基本、進階及偏好三區。首次使用先填基本資料，再按「一鍵設定話機」。')
 sub('基本設定')
@@ -144,7 +144,7 @@ def footer(canvas, doc):
     canvas.line(45, 42, A4[0]-45, 42)
     canvas.setFont('JhengHei', 8)
     canvas.setFillColor(GRAY)
-    canvas.drawString(45, 28, 'PhoneRecord  |  操作與設定手冊  |  2026-11-06')
+    canvas.drawString(45, 28, 'PhoneRecord  |  操作與設定手冊  |  2026-11-07')
     canvas.drawRightString(A4[0]-45, 28, str(doc.page))
     canvas.restoreState()
 
