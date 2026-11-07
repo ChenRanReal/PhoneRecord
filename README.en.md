@@ -4,8 +4,8 @@
 
 The x64 development build adds optional [offline recording transcription](docs/離線錄音轉文字.md), disabled by default, with one-click local setup. SenseVoiceSmall INT8 updates text during calls; Qwen3-ASR 0.6B / 1.7B can retranscribe completed calls while retaining separate model results. Historical recordings can also be transcribed manually. The x86 build excludes this feature. Conversation summaries are not implemented.
 
-The current C++ desktop source version is **2.7.5**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
-Version 2.7.5 adds DHCP phone tracking: enter the current IP and MAC, save, restart, then run one-click setup. Later address changes follow callbacks without requiring a fixed IP.
+The current C++ desktop source version is **2.7.6**. On Windows it receives network recordings from a compatible phone, starts recording when the call connects, saves the file after hangup, and includes built-in playback, health checks, and troubleshooting guidance.
+Version 2.7.6 adds DHCP phone tracking: enter the current IP and MAC, save, restart, then run one-click setup. Later address changes follow callbacks without requiring a fixed IP.
 Version 2.7.4 suggests local IPv4 automatically and follows the phone route for untouched suggestions, while preserving saved and manually entered addresses.
 Version 2.7.2 adds Settings > Configure phone: review and confirm network recording and callback changes directly in the app, with encrypted backups and verified readback. No script is required. See the [Traditional Chinese PDF manual](output/pdf/PhoneRecord_操作與設定手冊.pdf).
 Version 2.7.0 adds [updates](docs/自動更新與發布.md): periodic background checks, separate update balloons and a persistent tray arrow. You choose when to download and restart while idle. Install an updater-enabled version manually once; official binaries are published under [GitHub Releases](https://github.com/ChenRanReal/PhoneRecord/releases).

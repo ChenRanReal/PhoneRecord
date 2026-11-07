@@ -58,7 +58,7 @@ def note(text):
     story.append(t)
 
 
-add('PHONERECORD 2.7.5  /  操作手冊  /  2026-11-07', 'small')
+add('PHONERECORD 2.7.6  /  操作手冊  /  2026-11-07', 'small')
 add('軟體設定', 'h1')
 add('左側「連接設定」分成基本、進階及偏好三區。首次使用先填基本資料，再按「一鍵設定話機」。')
 sub('基本設定')

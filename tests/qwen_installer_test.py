@@ -51,7 +51,9 @@ function FixtureNative {
             downloads = json.loads((root/'fixture-downloads.json').read_text())
             models = [item for item in downloads if item['step'] == 'model']
             assert len(models) == 7 and sum(item['size'] for item in models) == size
-            assert all(Path(item['file']).parent == root/'qwen'/directory for item in models)
+            # The installer canonicalizes its root. GitHub's short temp path must still match.
+            expected = (root/'qwen'/directory).resolve()
+            assert all(Path(item['file']).resolve().parent == expected for item in models)
             assert all(f'Qwen3-ASR-{variant}-hf/resolve/' in item['url'] for item in models)
             assert all(len(item['hash']) == 64 for item in models)
             assert variant in (root/'qwen'/marker).read_text()
