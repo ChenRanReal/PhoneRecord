@@ -23,14 +23,19 @@ static bool recordingAddressUnavailable(const DiagnosticSnapshot& state) {
 }
 
 /// Load a shared embedded product icon at the system's large or small native size.
+/// The handle is cached: the shell timer asks for it several times a second, and LR_SHARED already
+/// guarantees one image per module, so re-loading only produced log and GDI churn.
 static HICON applicationIcon(bool smallSize = false) {
+    static HICON smallIcon = NULL, largeIcon = NULL;
+    HICON& cached = smallSize ? smallIcon : largeIcon;
+    if (cached) return cached;
     const int width = GetSystemMetrics(smallSize ? SM_CXSMICON : SM_CXICON);
     const int height = GetSystemMetrics(smallSize ? SM_CYSMICON : SM_CYICON);
-    HICON icon = reinterpret_cast<HICON>(LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_PHONERECORD),
+    cached = reinterpret_cast<HICON>(LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_PHONERECORD),
         IMAGE_ICON, width, height, LR_SHARED));
-    if (!icon) { LOGW("APP_ICON_LOAD_FAILED size=%dx%d win32=%lu", width, height, GetLastError()); return LoadIconW(NULL, IDI_APPLICATION); }
+    if (!cached) { LOGW("APP_ICON_LOAD_FAILED size=%dx%d win32=%lu", width, height, GetLastError()); cached = LoadIconW(NULL, IDI_APPLICATION); return cached; }
     LOGD("APP_ICON_LOADED resource=%d size=%dx%d", IDI_PHONERECORD, width, height);
-    return icon;
+    return cached;
 }
 
 /// Native window handle used only for asynchronous media notifications.
