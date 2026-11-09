@@ -21,7 +21,7 @@ Version 2.4.1 adds a phone setup script: preview first, then after confirmation 
 ## Startup and first-time setup
 
 In this project, double-click [Start-PhoneRecord.cmd](Start-PhoneRecord.cmd), or run `cpp/PhoneRecord.exe` directly.
-When handing the program to someone else, the exe can start on its own and does not need Python. Put it in a writable folder. The first launch opens the settings page with the required addresses and account left blank, so that person enters their own details.
+When handing the program to someone else, the exe can start on its own. Put it in a writable folder. The first launch opens the settings page with the required addresses and account left blank, so that person enters their own details.
 The optional [config.example.ini](cpp/config.example.ini) is a blank template. Do not substitute the personal configuration file from this computer.
 
 The lower left switches among 简体中文, 繁體中文, and English. Complete offline help is built in, including first-time setup, what each field is for, and the phone-side counterpart.
@@ -65,7 +65,7 @@ Every address is filled in by the user. Changing the event port requires updatin
 - [C++ build and modules](cpp/README.md) (Chinese)
 - [Phone setup and failure diagnosis](docs/話機自動設定.md) (Chinese)
 - [Historical call titles and backup](docs/歷史通話命名.md) (Chinese)
-- [Development, verification, and the optional Python edition](docs/開發與驗證.md) (Chinese)
+- [Development and verification](docs/開發與驗證.md) (Chinese)
 - [Apache-2.0 license](LICENSE)
 
-From the project root, run `cmd /c cpp\build.bat` to build the C++17 / x86 / static-CRT desktop program. The optional Python edition is in `src/`; see the development notes for how to use it. Do not let the two editions occupy the same ports at the same time. Personal settings, the login cache, recordings, and on-site troubleshooting data stay on the machine and are not added to the repository.
+From the project root, run `cmd /c cpp\build.bat` to build the C++17 / x86 / static-CRT desktop program. Personal settings, the login cache, recordings, and on-site troubleshooting data stay on the machine and are not added to the repository.
