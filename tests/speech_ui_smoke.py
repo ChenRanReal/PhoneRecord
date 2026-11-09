@@ -103,8 +103,8 @@ def main():
                         assert bool(USER.GetDlgItem(page,1))==live
                         assert bool(USER.GetDlgItem(page,8))!=live
                         if not live:
-                            assert USER.SendMessageW(USER.GetDlgItem(page,8),0x0146,0,0)==2
-                            assert USER.SendMessageW(USER.GetDlgItem(page,34),0x0146,0,0)==3
+                            assert USER.SendMessageW(USER.GetDlgItem(page,8),0x0146,0,0)>=2
+                            assert USER.SendMessageW(USER.GetDlgItem(page,34),0x0146,0,0)==8
                             assert USER.SendMessageW(USER.GetDlgItem(page,35),0x0146,0,0)==1
                             for index,text in enumerate(['SenseVoice saved','Qwen 0.6B saved','Qwen 1.7B saved']):
                                 choose(page,34,index);assert text in title(USER.GetDlgItem(page,30)), (index,text,title(USER.GetDlgItem(page,30)),title(USER.GetDlgItem(page,35)))

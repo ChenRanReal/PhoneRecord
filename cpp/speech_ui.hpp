@@ -57,15 +57,27 @@ private:
     /// Settings always occupy the left card; the selected task's text occupies the right card.
     void layout() {
         const int w=width(),h=height(),left=248,right=w-left-32;
-        move(1,28,22,204,44); move(45,28,22,204,44);
-        move(40,28,82,204,22); move(8,28,108,204,180); move(41,28,108,204,28);
-        move(42,28,150,204,22);move(2,28,176,204,200);
-        move(43,28,218,204,22);move(3,28,244,204,150);
-        move(12,28,286,204,28);move(4,28,332,204,36);move(5,28,378,204,30);
+        move(1,28,16,204,36); move(45,28,22,204,44);
+        move(50,28,54,204,18); move(51,28,72,204,140);
+        move(52,28,108,204,18); move(53,28,126,204,160);
+        move(54,28,160,204,18); move(55,28,178,204,140); move(56,28,214,204,92);
+        move(40,28,108,204,18); move(8,28,108,204,180); move(41,28,128,204,24);
+        if(!live_){
+            move(40,28,72,204,18); move(8,28,92,204,160);
+            move(58,28,118,204,70);
+            move(42,28,192,204,18); move(2,28,210,204,120);
+            move(43,28,242,204,18); move(3,28,260,204,100);
+            move(12,28,292,204,26); move(4,28,322,204,30); move(5,28,356,204,26);
+        } else {
+            move(42,28,158,204,18);move(2,28,176,204,160);
+            move(43,28,210,204,18);move(3,28,228,204,120);
+            move(12,28,262,204,28);move(4,28,296,204,32);move(5,28,334,204,28);
+        }
         move(9,28,h-82,204,28);
         move(35,left+20,44,right-124,180);move(36,w-108,44,80,28);
-        move(34,left+20,86,right-32,180);
-        move(30,left+20,live_?68:128,right-32,std::max(80,h-(live_?140:200)));
+        move(34,left+20,86,right-56,220);
+        move(57,live_?280:w-46,live_?18:90,22,22);
+        move(30,left+20,live_?68:148,right-32,std::max(80,h-(live_?140:220)));
         move(10,left+20,68,right-32,std::max(80,h-140));
         move(31,left+20,h-52,148,36);move(32,w-188,h-52,160,36);move(11,w-188,h-52,160,36);
         if(w!=laidWidth_||h!=laidHeight_){laidWidth_=w;laidHeight_=h;InvalidateRect(window_,NULL,FALSE);}
@@ -111,7 +123,38 @@ private:
         CloseClipboard();
     }
     /// Resolve provider from this module, independent of the version currently being viewed.
-    string provider() const {return live_ ? "sense" : SendMessageW(GetDlgItem(window_,8),CB_GETCURSEL,0,0)==1 ? "qwen17" : "qwen";}
+    string provider() const {
+        if(live_) return "sense";
+        const int index=static_cast<int>(SendMessageW(GetDlgItem(window_,8),CB_GETCURSEL,0,0));
+        return index>=0&&index<static_cast<int>(historyModels_.size())?historyModels_[index]:"qwen";
+    }
+    /// Left-side transcription choices: Qwen, SenseVoice, then each supported input method that is installed.
+    void fillHistoryModels() {
+        HWND model=GetDlgItem(window_,8); if(!model) return;
+        const string current=historyModels_.empty()?(g_speech.model()=="qwen17"?"qwen17":"qwen"):provider();
+        historyModels_.clear(); SendMessageW(model,CB_RESETCONTENT,0,0);
+        const wstring offline=uiText("speech.trait_offline"), ime=uiText("speech.trait_ime");
+        auto add=[&](const string& id, const wstring& label){ historyModels_.push_back(id); SendMessageW(model,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str())); if(id==current) SendMessageW(model,CB_SETCURSEL,static_cast<WPARAM>(historyModels_.size()-1),0); };
+        add("qwen",L"Qwen3-ASR 0.6B · "+offline); add("qwen17",L"Qwen3-ASR 1.7B · "+offline); add("sense",L"SenseVoice · "+offline);
+        if(imes_.empty()) imes_=enumerateEnabledImes();
+        for(const auto& item:imes_) if(item.supported) add(item.model, wstring(sourceCaptionFor(item.model))+L" · "+ime);
+        if(SendMessageW(model,CB_GETCURSEL,0,0)<0) SendMessageW(model,CB_SETCURSEL,0,0);
+        SendMessageW(model,CB_SETDROPPEDWIDTH,420,0);
+    }
+    /// Play one saved recording into the selected input method without blocking the window.
+    void startImeFile(const string& model) {
+        if(wav_.empty()||imeFileRunning_.exchange(true)) return;
+        string savedTip, savedProfile, savedDevice; g_speech.liveImeSelection(savedTip, savedProfile, savedDevice);
+        const wstring device=findVirtualCableId(utf8ToWide(savedDevice));
+        if(device.empty()){ imeFileRunning_=false; notice(uiText("speech.ime_no_device"),true); refresh(true); return; }
+        localError_=uiText("speech.ime_file_running"); resultModel_=model; if(HWND versions=GetDlgItem(window_,34))SendMessageW(versions,CB_SETCURSEL,versionIndex(model),0); transcriptStamp_=0; refresh(true);
+        SetForegroundWindow(window_); if(viewer_) SetFocus(viewer_);
+        imeActivateModel(model, fileProfileHold()); Sleep(200); if(viewer_) SetFocus(viewer_);
+        // The caption worker opens WeChat's bar itself, because an old bar has to be closed first.
+        if(model!="wetype") openImeVoice(model, false);
+        const HWND owner=window_; const wstring wav=wav_;
+        std::thread([owner,wav,model,device]{ string text; const int code=imePlayExistingWav(wav,L"CABLE Input",text,model,device); if(IsWindow(owner)) PostMessageW(owner,WM_APP+3,code,0); }).detach();
+    }
     /// Each saved version keeps the established model-specific sidecar paths.
     wstring resultPath(const wchar_t* ext) const {return wav_+SpeechService::resultSuffix(resultModel_)+ext;}
     /// Fill history from the existing recording index; no file picker or second navigation is required.
@@ -126,7 +169,110 @@ private:
             SendMessageW(choices,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str()));
         }
         if(files_.empty())wav_.clear();else{SendMessageW(choices,CB_SETCURSEL,selected,0);wav_=files_[selected];}
+        if(!live_&&(resultModel_=="sense"||imeResultModel(resultModel_))){const string model=sharedCaptionModel();resultModel_=imeResultModel(model)?model:"sense";if(HWND versions=GetDlgItem(window_,34))SendMessageW(versions,CB_SETCURSEL,versionIndex(resultModel_),0);}
         transcriptStamp_=0;
+    }
+    /// Saved-result menu order. WeChat input stays last so the existing SenseVoice and Qwen positions do not move.
+    int versionIndex(const string& model) const {
+        const char* models[] = {"sense","qwen","qwen17","wetype","doubao","iflytek","sogou","windows"};
+        for (int index = 0; index < 8; ++index) if (model == models[index]) return index;
+        return 0;
+    }
+    string versionModel(int index) const {
+        const char* models[] = {"sense","qwen","qwen17","wetype","doubao","iflytek","sogou","windows"};
+        return index >= 0 && index < 8 ? models[index] : "sense";
+    }
+    /// Model written inside the shared live sidecar. Qwen files are separate and do not use this.
+    string sharedCaptionModel() const {
+        if (wav_.empty()) return "";
+        return jsonField(SpeechService::read(wav_ + L".transcript.json"), "model");
+    }
+    /// Visible name of the engine that produced the text now on screen.
+    wstring sourceCaptionFor(const string& model) const {
+        if (model=="wetype") return uiText("speech.source_wetype");
+        if (model=="doubao") return uiText("speech.source_doubao");
+        if (model=="iflytek") return uiText("speech.source_iflytek");
+        if (model=="sogou") return uiText("speech.source_sogou");
+        if (model=="windows") return uiText("speech.source_windows");
+        if (model.find("sense")!=string::npos) return uiText("speech.engine_sense");
+        return L"";
+    }
+    wstring sourceCaption() const { return sourceCaptionFor(captionModel_); }
+    void fillVersions(int keep) {
+        HWND versions=GetDlgItem(window_,34); if(!versions) return;
+        SendMessageW(versions,CB_RESETCONTENT,0,0);
+        for(const char* key:{"speech.saved_sense","speech.saved_qwen","speech.saved_qwen17","speech.saved_wetype","speech.saved_doubao","speech.saved_iflytek","speech.saved_sogou","speech.saved_windows"}) SendMessageW(versions,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText(key)));
+        SendMessageW(versions,CB_SETCURSEL,keep,0);
+        SendMessageW(versions,CB_SETDROPPEDWIDTH,420,0);
+    }
+    /// Show the supported input method's own icon. The tooltip lists those input methods by their system names.
+    void applyImeIcon() {
+        if(imeIcon_){DestroyIcon(imeIcon_);imeIcon_=NULL;}
+        const string shown=live_?captionModel_:resultModel_;
+        wstring names; imeIcon_=supportedImeIcon(names, imeResultModel(shown)?shown:""); supportedNames_=names;
+        HWND icon=GetDlgItem(window_,57); if(!icon) return;
+        if(imeIcon_) SendMessageW(icon,STM_SETICON,reinterpret_cast<WPARAM>(imeIcon_),0);
+        ShowWindow(icon,imeIcon_?SW_SHOW:SW_HIDE);
+        tooltipText_=wstring(uiText("speech.ime_icon_tip"));
+        if(!names.empty()) tooltipText_+=L"\n"+names;
+        if(!tooltip_) tooltip_=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASS,NULL,WS_POPUP|TTS_NOPREFIX|TTS_ALWAYSTIP,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,window_,NULL,GetModuleHandleW(NULL),NULL);
+        TOOLINFOW info{}; info.cbSize=sizeof(info); info.uFlags=TTF_IDISHWND|TTF_SUBCLASS; info.hwnd=window_; info.uId=reinterpret_cast<UINT_PTR>(icon); info.lpszText=const_cast<wchar_t*>(tooltipText_.c_str());
+        if(!SendMessageW(tooltip_,TTM_GETTOOLINFOW,0,reinterpret_cast<LPARAM>(&info))) SendMessageW(tooltip_,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&info));
+        else SendMessageW(tooltip_,TTM_UPDATETIPTEXTW,0,reinterpret_cast<LPARAM>(&info));
+        SendMessageW(tooltip_,TTM_SETMAXTIPWIDTH,0,320);
+    }
+    bool imeSelected() const {
+        HWND engine=GetDlgItem(window_,51); if(!engine) return false;
+        return SendMessageW(engine,CB_GETCURSEL,0,0)==0;
+    }
+    /// The input method currently shown in the combo, or null when the list is empty.
+    const LiveImeEntry* selectedIme() const {
+        const int index=static_cast<int>(SendMessageW(GetDlgItem(window_,53),CB_GETCURSEL,0,0));
+        return index>=0 && index<static_cast<int>(imes_.size()) ? &imes_[index] : nullptr;
+    }
+    /// Show only the controls that belong to the selected live engine.
+    void showEngine() {
+        if(!live_) return;
+        const bool ime=imeSelected();
+        for(int id:{52,53,54,55,56}) if(HWND child=GetDlgItem(window_,id)) ShowWindow(child,ime?SW_SHOW:SW_HIDE);
+        for(int id:{40,41,42,2,43,3,12,4,5}) if(HWND child=GetDlgItem(window_,id)) ShowWindow(child,ime?SW_HIDE:SW_SHOW);
+    }
+    /// Persist the visible input method and playback endpoint without changing Windows defaults.
+    void applyImeSelection() {
+        const LiveImeEntry* ime=selectedIme();
+        const int deviceIndex=static_cast<int>(SendMessageW(GetDlgItem(window_,55),CB_GETCURSEL,0,0));
+        const string device=deviceIndex>=0 && deviceIndex<static_cast<int>(devices_.size()) ? wideToUtf8(devices_[deviceIndex].id) : "";
+        g_speech.selectLiveIme(ime?ime->tip:"", ime?ime->profile:"", device);
+    }
+    /// Reload installed text services and render endpoints. Product names stay in the system language.
+    void loadImeChoices(bool persist) {
+        imes_=enumerateEnabledImes(); devices_=enumeratePlaybackDevices();
+        string tip,profile,device; g_speech.liveImeSelection(tip,profile,device);
+        HWND imes=GetDlgItem(window_,53); const LRESULT previous=SendMessageW(imes,CB_GETCURSEL,0,0);
+        SendMessageW(imes,CB_RESETCONTENT,0,0);
+        int pick=-1, firstSupported=-1;
+        for(int index=0; index<static_cast<int>(imes_.size()); ++index) {
+            const auto& item=imes_[index];
+            const wstring shown=item.supported?sourceCaptionFor(item.model):item.name;
+            const wstring label=(shown.empty()?item.name:shown)+L" · "+uiText(item.supported?"speech.ime_supported":"speech.ime_unsupported_tag");
+            SendMessageW(imes,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str()));
+            if(imes_[index].supported && firstSupported<0) firstSupported=index;
+            if(imes_[index].tip==tip && imes_[index].profile==profile) pick=index;
+        }
+        if(pick<0) pick=firstSupported>=0?firstSupported:(imes_.empty()?-1:0);
+        if(pick<0 && previous>=0 && previous<static_cast<LRESULT>(imes_.size())) pick=static_cast<int>(previous);
+        if(pick>=0) SendMessageW(imes,CB_SETCURSEL,pick,0);
+        HWND outputs=GetDlgItem(window_,55); SendMessageW(outputs,CB_RESETCONTENT,0,0);
+        int devicePick=-1, cable=-1;
+        for(int index=0; index<static_cast<int>(devices_.size()); ++index) {
+            SendMessageW(outputs,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(devices_[index].name.c_str()));
+            if(utf8ToWide(device)==devices_[index].id) devicePick=index;
+            if(cable<0 && devices_[index].name.rfind(L"CABLE Input",0)==0) cable=index;
+        }
+        if(devicePick<0) devicePick=cable;
+        if(devicePick>=0) SendMessageW(outputs,CB_SETCURSEL,devicePick,0);
+        if(persist) applyImeSelection();
+        showEngine();
     }
     /// Create only the controls belonging to the selected task.
     void create() {
@@ -136,19 +282,29 @@ private:
         if(live_) {
             enabled_=control(L"BUTTON",uiText("speech.live_enable"),WS_TABSTOP|BS_AUTOCHECKBOX|BS_MULTILINE,1);
             SendMessageW(enabled_,BM_SETCHECK,g_speech.state().liveEnabled?BST_CHECKED:BST_UNCHECKED,0);
+            control(L"STATIC",uiText("speech.live_engine"),0,50);
+            HWND engine=control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,51);
+            SendMessageW(engine,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText("speech.engine_ime")));
+            SendMessageW(engine,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText("speech.engine_sense")));
+            SendMessageW(engine,CB_SETCURSEL,g_speech.liveEngine()=="ime"?0:1,0);
+            control(L"STATIC",uiText("speech.ime_pick"),0,52);
+            control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,53);
+            control(L"STATIC",uiText("speech.playback_device"),0,54);
+            control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,55);
+            control(L"STATIC",uiText("speech.ime_depend"),SS_LEFT|SS_EDITCONTROL|SS_NOPREFIX,56);
             control(L"STATIC",L"SenseVoiceSmall · INT8",0,41);
+            loadImeChoices(true);
         } else {
             enabled_=control(L"BUTTON",uiText("speech.history_enable"),WS_TABSTOP|BS_AUTOCHECKBOX|BS_MULTILINE,45);
             SendMessageW(enabled_,BM_SETCHECK,g_speech.state().historyEnabled?BST_CHECKED:BST_UNCHECKED,0);
             HWND model=control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,8);
-            for(const wchar_t* label:{L"Qwen3-ASR 0.6B",L"Qwen3-ASR 1.7B"})SendMessageW(model,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));
-            SendMessageW(model,CB_SETCURSEL,g_speech.model()=="qwen17"?1:0,0);
+            fillHistoryModels();
+            control(L"STATIC",uiText(imeResultModel(g_speech.model())?"speech.model_hint_local":"speech.model_hint_local"),SS_LEFT|SS_EDITCONTROL|SS_NOPREFIX,58);
             control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,35);
             control(L"BUTTON",uiText("button.refresh"),WS_TABSTOP|BS_OWNERDRAW,36);
             HWND versions=control(WC_COMBOBOXW,L"",WS_TABSTOP|CBS_DROPDOWNLIST,34);
-            for(const char* key:{"speech.saved_sense","speech.saved_qwen","speech.saved_qwen17"})SendMessageW(versions,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText(key)));
-            if(savedLive_) resultModel_="sense"; else resultModel_=provider();
-            SendMessageW(versions,CB_SETCURSEL,resultModel_=="qwen17"?2:resultModel_=="qwen"?1:0,0);recordings();
+            if(savedLive_){const string model=sharedCaptionModel();resultModel_=imeResultModel(model)?model:"sense";} else resultModel_=provider();
+            fillVersions(versionIndex(resultModel_));recordings();
             control(L"BUTTON",uiText("speech.history_start"),WS_TABSTOP|BS_OWNERDRAW,32);
         }
         control(L"STATIC",uiText(live_?"speech.module_model":"speech.history_model"),0,40);
@@ -166,38 +322,84 @@ private:
         detail_=control(L"EDIT",L"",WS_TABSTOP|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,10);
         SendMessageW(viewer_,EM_SETLIMITTEXT,8*1024*1024,0);SendMessageW(detail_,EM_SETLIMITTEXT,16384,0);
         control(L"BUTTON",uiText("speech.copy"),WS_TABSTOP|BS_OWNERDRAW,31);control(L"BUTTON",uiText("speech.copy_diagnostics"),WS_TABSTOP|BS_OWNERDRAW,11);
+        control(L"STATIC",L"",SS_ICON|SS_NOTIFY|SS_CENTERIMAGE,57);
+        applyImeIcon();
+        if(HWND hint=GetDlgItem(window_,58)){SendMessageW(hint,WM_SETFONT,reinterpret_cast<WPARAM>(small_),TRUE);updateModelHint();}
+        showEngine();
         SetTimer(window_,1,200,NULL);refresh(true);layout();
     }
     /// Show the SenseVoice sidecar saved beside this recording.
     void showSavedLive() {
-        savedLive_=true; resultModel_="sense"; transcriptStamp_=0;
-        if(HWND versions=GetDlgItem(window_,34)) SendMessageW(versions,CB_SETCURSEL,0,0);
+        savedLive_=true; const string model=sharedCaptionModel(); resultModel_=imeResultModel(model)?model:"sense"; transcriptStamp_=0;
+        if(HWND versions=GetDlgItem(window_,34)) SendMessageW(versions,CB_SETCURSEL,versionIndex(resultModel_),0);
     }
+    wstring clockText(uint64_t ms) const {
+        unsigned seconds=static_cast<unsigned>(ms/1000), minutes=seconds/60; seconds%=60; const unsigned hours=minutes/60; minutes%=60;
+        wchar_t buffer[32];
+        if(hours) swprintf(buffer,32,L"%u:%02u:%02u",hours,minutes,seconds); else swprintf(buffer,32,L"%02u:%02u",minutes,seconds);
+        return buffer;
+    }
+    wstring playProgressText() const { return wstring(uiText("speech.play_progress"))+L"  "+clockText(shownPlaySec_*1000)+L" / "+clockText(shownPlayTotalMs_); }
+    /// While an input method is playing a file, keep the transcript and the clock moving.
+    void showImePlayback() {
+        if(live_||!ImeFileSession::running().load()){ if(shownPlayTotalMs_){shownPlayTotalMs_=0;InvalidateRect(window_,NULL,FALSE);} return; }
+        imeFileRunning_=true;
+        string model, original, polished;
+        if(ImeFileSession::snapshot(model, original, polished)){
+            if(!model.empty()&&resultModel_!=model){ resultModel_=model; if(HWND versions=GetDlgItem(window_,34)) SendMessageW(versions,CB_SETCURSEL,versionIndex(model),0); }
+            string next;
+            if(!original.empty()) next+=wideToUtf8(uiText("speech.original"))+"\n"+imePanelUtf8(original)+"\n";
+            if(!polished.empty()) next+=wideToUtf8(uiText("speech.polished"))+"\n"+imePanelUtf8(polished);
+            if(imePanelUtf8(original).empty()&&imePanelUtf8(polished).empty()) next.clear();
+            if(next!=shownText_){
+                shownText_=std::move(next);
+                SetWindowTextW(viewer_,transcriptText().c_str());
+                const int length=GetWindowTextLengthW(viewer_);
+                SendMessageW(viewer_,EM_SETSEL,length,length); SendMessageW(viewer_,EM_SCROLLCARET,0,0);
+            }
+        }
+        const int opened=ImeFileSession::voiceOpened().load();
+        if(opened==1) notice(uiText("speech.ime_voice_opened"),false);
+        else if(opened==3) notice(uiText("speech.ime_voice_mic"),true);
+        else if(opened==2) notice(uiText("speech.ime_voice_closed"),true);
+        const uint64_t total=ImeFileSession::totalMs().load(), second=ImeFileSession::playedMs().load()/1000;
+        if(second!=shownPlaySec_||total!=shownPlayTotalMs_){ shownPlaySec_=second; shownPlayTotalMs_=total; InvalidateRect(window_,NULL,FALSE); }
+    }
+    void updateModelHint() {
+        if(HWND hint=GetDlgItem(window_,58)) SetWindowTextW(hint,uiText(imeResultModel(provider())?"speech.model_hint_ime":"speech.model_hint_local"));
+    }
+    /// Show one inline message and remember whether it must read as a failure.
+    void notice(const wstring& text, bool fail) { localError_ = text; localErrorFail_ = fail; }
     /// Persist only the settings for this module; setup remains a separate explicit action.
     bool configure() {
         const int selected=static_cast<int>(SendMessageW(language_,CB_GETCURSEL,0,0));if(selected<0||selected>=6)return false;
         const string source=SendMessageW(source_,CB_GETCURSEL,0,0)==1?"hf-mirror.com":"huggingface.co";
         const bool on=SendMessageW(enabled_,BM_GETCHECK,0,0)==BST_CHECKED;
         const bool ok=live_?g_speech.configureLive(on,languages_[selected],source):g_speech.configureHistory(on,languages_[selected],source);
-        if(!live_&&ok)g_speech.selectModel(provider());
-        if(!ok)localError_=uiText("speech.save_failed");refresh(true);return ok;
+        if(!live_&&ok){const string model=provider(); if(model=="sense"||model=="qwen"||model=="qwen17") g_speech.selectModel(model);}
+        if(!ok)notice(uiText("speech.save_failed"),true);refresh(true);return ok;
     }
     /// Show practical configuration guidance on demand, without crowding either task view.
     wstring hardware() const {
         const string model=provider();
+        if (imeResultModel(model)) return uiText("speech.ime_depend");
         return wstring(uiText(model=="sense"?"speech.sense_download":model=="qwen17"?"speech.qwen17_download":"speech.qwen06_download"))+L"\r\n\r\n"+uiText(model=="sense"?"speech.sense_config":model=="qwen17"?"speech.qwen17_config":"speech.qwen06_config")+L"\r\n\r\n"+uiText("speech.hardware_local")+L" "+std::to_wstring(ramGiB_)+L" GB RAM · "+std::to_wstring(cpuThreads_)+L" "+uiText("speech.hardware_threads")+L"\r\n"+uiText("speech.hardware_cpu");
     }
     /// Poll only changed transcript bytes and keep diagnostics accessible inside the same module.
     void refresh(bool force=false) {
         if(locale_!=g_uiLanguage.load()) {
             locale_=g_uiLanguage.load();force=true;
-            const std::map<int,const char*> labels={{1,"speech.live_enable"},{45,"speech.history_enable"},{40,"speech.module_model"},{42,"speech.language"},{43,"speech.source"},{4,"speech.module_install"},{5,"speech.module_stop"},{9,"speech.failure_details"},{12,"speech.hardware_button"},{31,"speech.copy"},{32,"speech.history_start"},{36,"button.refresh"},{11,"speech.copy_diagnostics"}};
+            const std::map<int,const char*> labels={{1,"speech.live_enable"},{45,"speech.history_enable"},{40,"speech.module_model"},{42,"speech.language"},{43,"speech.source"},{4,"speech.module_install"},{5,"speech.module_stop"},{9,"speech.failure_details"},{12,"speech.hardware_button"},{31,"speech.copy"},{32,"speech.history_start"},{36,"button.refresh"},{11,"speech.copy_diagnostics"},{50,"speech.live_engine"},{52,"speech.ime_pick"},{54,"speech.playback_device"},{56,"speech.ime_depend"}};
             for(const auto& label:labels)if(HWND control=GetDlgItem(window_,label.first))SetWindowTextW(control,uiText(label.second));
             SetWindowTextW(GetDlgItem(window_,40),uiText(live_?"speech.module_model":"speech.history_model"));
-            if(!live_){HWND versions=GetDlgItem(window_,34);const LRESULT version=SendMessageW(versions,CB_GETCURSEL,0,0);SendMessageW(versions,CB_RESETCONTENT,0,0);for(const char* key:{"speech.saved_sense","speech.saved_qwen","speech.saved_qwen17"})SendMessageW(versions,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText(key)));SendMessageW(versions,CB_SETCURSEL,version,0);}
+            if(!live_){const LRESULT version=SendMessageW(GetDlgItem(window_,34),CB_GETCURSEL,0,0);fillVersions(static_cast<int>(version));}
             const LRESULT selected=SendMessageW(language_,CB_GETCURSEL,0,0);SendMessageW(language_,CB_RESETCONTENT,0,0);
             for(const char* lang:languages_)SendMessageW(language_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText((string("speech.lang.")+lang).c_str())));SendMessageW(language_,CB_SETCURSEL,selected,0);
+            if(live_){HWND engine=GetDlgItem(window_,51);const LRESULT which=SendMessageW(engine,CB_GETCURSEL,0,0);SendMessageW(engine,CB_RESETCONTENT,0,0);SendMessageW(engine,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText("speech.engine_ime")));SendMessageW(engine,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(uiText("speech.engine_sense")));SendMessageW(engine,CB_SETCURSEL,which,0);loadImeChoices(false);} else fillHistoryModels();
+            applyImeIcon();
         }
+        if(live_ && ++imePoll_>=25){imePoll_=0;loadImeChoices(false);}
+        if(ImeFileSession::running().load()) imeFileRunning_=true;
         const auto state=g_speech.state();
         if(live_&&wav_!=state.liveWav){wav_=state.liveWav;transcriptStamp_=0;force=true;}
         const bool failure=!state.failureCode.empty()&&(state.operationModel.empty()||state.operationModel==provider());
@@ -205,9 +407,11 @@ private:
         if(failure&&failureRevision_!=state.revision){if(lastFailure_!=state.failureCode+state.detail){details_=true;advice_=false;lastFailure_=state.failureCode+state.detail;}failureRevision_=state.revision;}
         if(force||revision_!=state.revision) {
             revision_=state.revision;
-            EnableWindow(install_,(live_||state.historyEnabled)&&!state.busy);EnableWindow(cancel_,g_speech.pendingFor(provider()));
-            for(int id:{2,3,8})EnableWindow(GetDlgItem(window_,id),!state.busy);
-            EnableWindow(GetDlgItem(window_,32),state.historyEnabled&&!wav_.empty()&&!state.recording&&!state.busy);
+            const bool locked=!live_&&(state.busy||imeFileRunning_);
+            EnableWindow(install_,(live_||state.historyEnabled)&&!locked&&(live_||!imeResultModel(provider())));
+            EnableWindow(cancel_,state.busy||imeFileRunning_||g_speech.pendingFor(provider()));
+            for(int id:{2,3,8,34,35,36,45,12})EnableWindow(GetDlgItem(window_,id),!locked);
+            EnableWindow(GetDlgItem(window_,32),!locked&&state.historyEnabled&&!wav_.empty()&&!state.recording&&!state.busy);
             ShowWindow(GetDlgItem(window_,9),failure?SW_SHOW:SW_HIDE);
             SetWindowTextW(install_,uiText(g_speech.readyFor(provider())?"speech.module_repair":"speech.module_install"));
             SetWindowTextW(GetDlgItem(window_,9),uiText(details_?"speech.back_text":"speech.failure_details"));
@@ -216,12 +420,27 @@ private:
         const bool panel=details_||advice_;
         const auto reveal=[&](HWND child,bool visible){if(!child)return;const bool shown=(GetWindowLongW(child,GWL_STYLE)&WS_VISIBLE)!=0;if(shown!=visible)ShowWindow(child,visible?SW_SHOW:SW_HIDE);};
         reveal(viewer_,!panel);reveal(detail_,panel);reveal(GetDlgItem(window_,31),!panel);reveal(GetDlgItem(window_,11),details_);
-        if(!live_)for(int id:{32,34,35,36})reveal(GetDlgItem(window_,id),!panel);
+        if(!live_)for(int id:{32,34,35,36,57})reveal(GetDlgItem(window_,id),!panel&&(id!=57||imeIcon_));
+        if(live_)reveal(GetDlgItem(window_,57),!panel&&imeIcon_);
         if(panel){const wstring report=advice_?hardware():failureText(state);if(report!=shownDetail_){shownDetail_=report;SetWindowTextW(detail_,report.c_str());}}
         WIN32_FILE_ATTRIBUTE_DATA data{};const bool exists=!wav_.empty()&&GetFileAttributesExW(resultPath(L".txt").c_str(),GetFileExInfoStandard,&data);
         const uint64_t stamp=(static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime)<<32)|data.ftLastWriteTime.dwLowDateTime;
-        if(force||stamp!=transcriptStamp_){
-            transcriptStamp_=stamp;const string next=exists?SpeechService::read(resultPath(L".txt")):"";
+        const string fileModel=sharedCaptionModel();
+        const bool separate=resultModel_=="qwen"||resultModel_=="qwen17";
+        const bool matches=live_||separate||(resultModel_=="sense" ? fileModel.find("sense")!=string::npos||fileModel.empty() : fileModel==resultModel_);
+        if(force||stamp!=transcriptStamp_||fileModel!=captionModel_){
+            const string previousCaption = captionModel_;
+            transcriptStamp_=stamp; captionModel_=fileModel;
+            if(captionModel_!=previousCaption) applyImeIcon();
+            string next;
+            if(exists&&matches){
+                const string meta=SpeechService::read(resultPath(L".json"));
+                const string original=imePanelUtf8(jsonField(meta,"original")), polished=imePanelUtf8(jsonField(meta,"polished"));
+                if(!original.empty()||!polished.empty()){
+                    if(!original.empty()) next+=wideToUtf8(uiText("speech.original"))+"\n"+original+"\n";
+                    if(!polished.empty()) next+=wideToUtf8(uiText("speech.polished"))+"\n"+polished;
+                } else next=imePanelUtf8(SpeechService::read(resultPath(L".txt")));
+            }
             if(next!=shownText_){
                 shownText_=next;const LRESULT first=SendMessageW(viewer_,EM_GETFIRSTVISIBLELINE,0,0);
                 SetWindowTextW(viewer_,next.empty()?uiText(live_?"speech.live_empty":"speech.history_empty"):transcriptText().c_str());
@@ -234,8 +453,10 @@ private:
                 if(current!=placeholder)SetWindowTextW(viewer_,placeholder);
             }
         }
+        showImePlayback();
+        if(!live_)updateModelHint();
         const bool liveState=state.liveEnabled||state.recording;
-        if(force||lastPaintRevision_!=state.revision||lastPaintPanel_!=panel||lastPaintLive_!=liveState||lastPaintError_!=localError_){lastPaintRevision_=state.revision;lastPaintPanel_=panel;lastPaintLive_=liveState;lastPaintError_=localError_;InvalidateRect(window_,NULL,FALSE);}
+        if(force||lastPaintRevision_!=state.revision||lastPaintPanel_!=panel||lastPaintLive_!=liveState||lastPaintError_!=localError_||lastPaintModel_!=captionModel_){lastPaintRevision_=state.revision;lastPaintPanel_=panel;lastPaintLive_=liveState;lastPaintError_=localError_;lastPaintModel_=captionModel_;InvalidateRect(window_,NULL,FALSE);}
     }
     /// Paint a compact readiness summary; lengthy setup facts stay in the inline diagnostics panel.
     void paint(HDC external=NULL) {
@@ -245,11 +466,35 @@ private:
         surface(dc,12,8,236,h-24);surface(dc,260,8,w-272,h-24);
         const bool owns=state.busy&&state.operationModel==provider();
         const bool failed=!state.failureCode.empty()&&(state.operationModel.empty()||state.operationModel==provider());
-        const wstring status=!localError_.empty()?localError_:failed?uiText(("speech."+state.failureCode).c_str()):owns?uiText(("speech."+state.step).c_str()):uiText(!live_&&!state.historyEnabled?"speech.history_off":ready?"speech.module_ready":"speech.module_needed");
-        text(dc,status,28,428,204,std::max(44,h-530),failed?RGB(171,58,40):RGB(68,88,114),small_);
+        const LiveImeEntry* ime=live_?selectedIme():nullptr;
+        const bool imePage=live_&&imeSelected();
+        const wchar_t* imeStatus=nullptr;
+        if(imePage){
+            if(state.livePhase=="ime_wait") imeStatus=uiText("speech.ime_waiting");
+            else if(state.livePhase=="ime_fallback") imeStatus=uiText("speech.ime_fallback");
+            else if(state.livePhase=="ime_no_device") imeStatus=uiText("speech.ime_no_device");
+            else if(!ime||!ime->supported) imeStatus=uiText("speech.ime_blocked");
+            else imeStatus=uiText("speech.live_waiting");
+        }
+        wstring status=localError_;
+        if(status.empty()&&imeStatus) status=imeStatus;
+        else if(status.empty()&&failed) status=uiText(("speech."+state.failureCode).c_str());
+        else if(status.empty()&&owns) status=uiText(("speech."+state.step).c_str());
+        else if(status.empty()&&!live_&&!state.historyEnabled) status=uiText("speech.history_off");
+        else if(status.empty()&&!imePage) status=uiText(ready?"speech.module_ready":"speech.module_needed");
+        text(dc,status,28,imePage?312:430,204,std::max(36,h-(imePage?380:480)),((!imeStatus&&failed)||localErrorFail_)?RGB(171,58,40):RGB(68,88,114),small_);
         if(owns){RECT track{px(28),px(414),px(232),px(418)};HBRUSH base=CreateSolidBrush(RGB(222,229,240));FillRect(dc,&track,base);DeleteObject(base);track.right=px(28+std::max(3,state.percent)*204/100);HBRUSH bar=CreateSolidBrush(RGB(43,105,230));FillRect(dc,&track,bar);DeleteObject(bar);}
-        text(dc,uiText(advice_?"speech.hardware_button":details_?"speech.failure_details":live_?"speech.live_title":"speech.history_choose"),280,20,w-308,26,RGB(31,51,77),font_);
-        if(live_&&!details_&&!advice_)text(dc,uiText(!state.liveEnabled?"speech.live_off":state.recording?"speech.live_recording":"speech.live_waiting"),280,46,w-308,22,RGB(100,116,139),small_,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        const wstring source=live_?sourceCaption():L"";
+        wstring heading=uiText(advice_?"speech.hardware_button":details_?"speech.failure_details":live_?"speech.live_title":"speech.history_choose");
+        if(live_&&!details_&&!advice_&&!source.empty()) heading+=L" · "+source;
+        const bool mark=live_&&imeIcon_&&!details_&&!advice_;
+        text(dc,heading,mark?308:280,20,w-(mark?336:308),26,RGB(31,51,77),font_,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
+        if(!live_&&!details_&&!advice_&&shownPlayTotalMs_) text(dc,playProgressText(),280,116,w-308,22,RGB(43,105,230),small_,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        else if(!live_&&!details_&&!advice_) text(dc,uiText("speech.history_view_note"),280,116,w-308,28,RGB(100,116,139),small_);
+        if(live_&&!details_&&!advice_){
+            const char* key=!state.liveEnabled?"speech.live_off":state.livePhase=="ime_wait"?"speech.ime_waiting":state.livePhase=="ime_fallback"?"speech.ime_fallback":state.livePhase=="ime_no_device"?"speech.ime_no_device":state.livePhase=="ime_unsupported"||(imePage&&ime&&!ime->supported)?"speech.ime_unsupported":state.recording?"speech.live_recording":"speech.live_waiting";
+            text(dc,uiText(key),280,46,w-308,22,RGB(100,116,139),small_,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS);
+        }
         if(!external)EndPaint(window_,&ps);
     }
     /// Render the real nested controls for offline captures, including classic hidden combo/edit text.
@@ -293,6 +538,7 @@ private:
         case WM_PRINTCLIENT:self->paint(reinterpret_cast<HDC>(wparam));return 0;
         case WM_ERASEBKGND:return 1;
         case WM_TIMER:self->refresh();return 0;
+        case WM_APP+3:self->imeFileRunning_=false;self->resultModel_=self->provider();if(HWND versions=GetDlgItem(window,34))SendMessageW(versions,CB_SETCURSEL,self->versionIndex(self->resultModel_),0);self->transcriptStamp_=0;self->localError_.clear();self->localErrorFail_=false;if(wparam==4)self->notice(uiText("speech.ime_no_device"),true);else if(wparam==8)self->notice(uiText("speech.ime_voice_mic"),true);else if(wparam==7)self->notice(uiText(self->provider()=="windows"?"speech.ime_voice_caret":"speech.ime_voice_closed"),true);else if(wparam==6)self->notice(uiText("speech.ime_voice_empty"),true);else if(wparam==0)self->notice(uiText("speech.ime_voice_opened"),false);else if(wparam!=0)self->localError_=uiText("speech.ime_waiting");self->refresh(true);return 0;
         case WM_CTLCOLORSTATIC:case WM_CTLCOLOREDIT:SetBkColor(reinterpret_cast<HDC>(wparam),RGB(255,255,255));SetTextColor(reinterpret_cast<HDC>(wparam),RGB(31,51,77));return reinterpret_cast<LRESULT>(self->white_);
         case WM_DRAWITEM: {
             const auto* item=reinterpret_cast<DRAWITEMSTRUCT*>(lparam);const bool primary=item->CtlID==4||item->CtlID==32,disabled=item->itemState&ODS_DISABLED;
@@ -307,25 +553,30 @@ private:
             if(notify==EN_SETFOCUS||notify==EN_KILLFOCUS||notify==EN_CHANGE||notify==EN_UPDATE||notify==EN_ERRSPACE||notify==EN_MAXTEXT||notify==EN_HSCROLL||notify==EN_VSCROLL)return 0;
             const int id=LOWORD(wparam);const bool changed=notify==CBN_SELCHANGE;
             if(id==1||id==45||((id==2||id==3||id==8)&&changed))self->configure();
+            if(id==8&&changed)self->updateModelHint();
+            if(id==51&&changed){g_speech.selectLiveEngine(SendMessageW(GetDlgItem(window,51),CB_GETCURSEL,0,0)==0?"ime":"sense");self->showEngine();}
+            if((id==53||id==55)&&changed)self->applyImeSelection();
             if(id==4){
-                if(!self->live_ && !g_speech.state().historyEnabled)self->localError_=uiText("speech.history_off");
+                if(!self->live_ && !g_speech.state().historyEnabled)self->notice(uiText("speech.history_off"),true);
                 else if(self->configure()){if(self->live_ && !g_speech.state().enabled)g_speech.configure(true,g_speech.language(),g_speech.source(),true);g_speech.prepare(self->provider(),self->live_?g_speech.liveSource():g_speech.source());}
             }
-            if(id==5)g_speech.cancelModel(self->provider());
+            if(id==5){if(self->imeFileRunning_.load()||ImeFileSession::running().load())ImeFileSession::stop();else g_speech.cancelModel(self->provider());}
             if(id==9){self->details_=!self->details_;self->advice_=false;}
             if(id==12){self->advice_=!self->advice_;self->details_=false;}
             if(id==36)self->recordings();
-            if(id==35&&changed){const int i=static_cast<int>(SendMessageW(GetDlgItem(window,35),CB_GETCURSEL,0,0));if(i>=0&&i<static_cast<int>(self->files_.size()))self->wav_=self->files_[i];self->transcriptStamp_=0;}
-            if(id==34&&changed){const int i=static_cast<int>(SendMessageW(GetDlgItem(window,34),CB_GETCURSEL,0,0));self->resultModel_=i==2?"qwen17":i==1?"qwen":"sense";self->transcriptStamp_=0;}
+            if(id==35&&changed){const int i=static_cast<int>(SendMessageW(GetDlgItem(window,35),CB_GETCURSEL,0,0));if(i>=0&&i<static_cast<int>(self->files_.size()))self->wav_=self->files_[i];const string model=self->sharedCaptionModel();if(imeResultModel(model))self->resultModel_=model;else if(imeResultModel(self->resultModel_))self->resultModel_="sense";if(HWND versions=GetDlgItem(window,34))SendMessageW(versions,CB_SETCURSEL,self->versionIndex(self->resultModel_),0);self->transcriptStamp_=0;self->applyImeIcon();}
+            if(id==34&&changed){const int i=static_cast<int>(SendMessageW(GetDlgItem(window,34),CB_GETCURSEL,0,0));self->resultModel_=self->versionModel(i);self->transcriptStamp_=0;self->applyImeIcon();}
             if(id==31)self->copyText(self->transcriptText());if(id==11)self->copyText(self->failureText(g_speech.state()));
             if(id==32&&self->configure()){
-                if(!g_speech.state().historyEnabled)self->localError_=uiText("speech.history_off");
-                else if(!g_speech.readyFor(self->provider()))self->localError_=uiText("speech.module_needed");
-                else {self->resultModel_=self->provider();SendMessageW(GetDlgItem(window,34),CB_SETCURSEL,self->resultModel_=="qwen17"?2:1,0);if(!g_speech.enqueue(self->wav_,false,self->resultModel_))self->localError_=uiText("speech.admission_failed");else self->localError_.clear();}
+                const string model=self->provider();
+                if(!g_speech.state().historyEnabled)self->notice(uiText("speech.history_off"),true);
+                else if(imeResultModel(model)) self->startImeFile(model);
+                else if(!g_speech.readyFor(model))self->notice(uiText("speech.module_needed"),true);
+                else {self->resultModel_=model;SendMessageW(GetDlgItem(window,34),CB_SETCURSEL,self->versionIndex(model),0);if(!g_speech.enqueue(self->wav_,false,model))self->notice(uiText("speech.admission_failed"),true);else{self->localError_.clear();self->localErrorFail_=false;}}
             }
             self->refresh(true);return 0;
         }
-        case WM_NCDESTROY:KillTimer(window,1);instance()=NULL;SetWindowLongPtrW(window,GWLP_USERDATA,0);DeleteObject(self->font_);DeleteObject(self->small_);DeleteObject(self->white_);delete self;return 0;
+        case WM_NCDESTROY:KillTimer(window,1);if(self->imeIcon_)DestroyIcon(self->imeIcon_);if(self->tooltip_)DestroyWindow(self->tooltip_);instance()=NULL;SetWindowLongPtrW(window,GWLP_USERDATA,0);DeleteObject(self->font_);DeleteObject(self->small_);DeleteObject(self->white_);delete self;return 0;
         }
         return DefWindowProcW(window,message,wparam,lparam);
     }
@@ -335,11 +586,19 @@ private:
     /// Task identity, inline auxiliary panel and persistent file-version selection.
     bool live_=false,savedLive_=false,details_=false,advice_=false;
     int dpi_=96,locale_=-1,laidWidth_=0,laidHeight_=0;unsigned ramGiB_=0,cpuThreads_=0;
-    uint64_t revision_=static_cast<uint64_t>(-1),failureRevision_=0,transcriptStamp_=0,lastPaintRevision_=static_cast<uint64_t>(-1);
+    uint64_t revision_=static_cast<uint64_t>(-1),failureRevision_=0,transcriptStamp_=0,lastPaintRevision_=static_cast<uint64_t>(-1),shownPlaySec_=0,shownPlayTotalMs_=0;
     /// Last painted summary, so the 200ms poll does not redraw both speech pages when nothing changed.
     bool lastPaintPanel_=false,lastPaintLive_=false;
-    wstring wav_,shownDetail_,localError_,lastPaintError_;string shownText_,resultModel_="sense",lastFailure_;
+    wstring wav_,shownDetail_,localError_,lastPaintError_,tooltipText_,supportedNames_;string shownText_,resultModel_="sense",captionModel_,lastPaintModel_,lastFailure_;
+    /// Inline messages that report a failed action are painted in the warning colour instead of the neutral one.
+    bool localErrorFail_=false;
+    HICON imeIcon_=NULL; HWND tooltip_=NULL;
     std::vector<wstring> files_;
+    std::vector<string> historyModels_;
+    std::atomic<bool> imeFileRunning_{false};
+    std::vector<LiveImeEntry> imes_;
+    std::vector<LivePlaybackDevice> devices_;
+    int imePoll_=0;
     const char* languages_[6]={"auto","zh","en","yue","ja","ko"};
 };
 

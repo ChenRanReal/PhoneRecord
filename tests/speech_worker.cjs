@@ -76,6 +76,16 @@ test('16 kHz input passes unchanged and language changes invalidate old checkpoi
   const fixture = backend(); await run(job, fixture.factory); assert.equal(fixture.stats.samples, 32000);
   await assert.rejects(run({ ...job, language: 'es' }, fixture.factory), /invalid_language/);
 }));
+test('a wetype sidecar is not resumed as a SenseVoice checkpoint', async () => fixture(async root => {
+  const file = path.join(root, 'ime.wav'); wav(file, 30);
+  fs.writeFileSync(file + '.transcript.json', JSON.stringify({ schema: 1, model: 'wetype', engine: 'wetype-ime', language: 'zh', mode: 'live', sourceSha256: '', duration: 30, status: 'running', segments: [{ start: 0, end: 30, text: '輸入法舊稿' }], text: '輸入法舊稿' }));
+  const { stats, factory } = backend({ seconds: 30 });
+  await run({ root, wav: file, language: 'zh', progress: path.join(root, 'progress.json') }, factory);
+  const result = JSON.parse(fs.readFileSync(file + '.transcript.json', 'utf8'));
+  assert.equal(result.model, 'sensevoice-int8-2024-07-17');
+  assert.equal(stats.decoded, 1);
+  assert.doesNotMatch(result.text, /輸入法舊稿/);
+}));
 test('truncated RIFF and unsupported sample rates fail before reading PCM', async () => fixture(async root => {
   for (const rate of [8000, 44100]) {
     const file = path.join(root, rate + '.wav'); wav(file, 1, rate);

@@ -153,6 +153,8 @@ private:
             if (!wav_.isOpen() && !openOutput()) { setWorkerReason("WAV_OPEN_FAILED"); break; }
             if (!wav_.write(pcm, rtp.payloadSize)) { setWorkerReason("WAV_WRITE_FAILED"); break; }
             if (packetCount_ == 1) speechRecordingStarted(path_);
+            // Copy only. The caption queue drops overflow and must never stall recvfrom.
+            speechLivePcm(pcm, rtp.payloadSize);
             quality_.add(pcm, rtp.payloadSize);
             diagnosticUpdate([&](DiagnosticSnapshot& state) {
                 state.pcmBytes += rtp.payloadSize * 2;
