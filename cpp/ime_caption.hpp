@@ -8,6 +8,7 @@
 #include <audioclient.h>
 #include <audiopolicy.h>
 #include <tlhelp32.h>
+#include <set>
 #include <functiondiscoverykeys_devpkey.h>
 #include <msctf.h>
 #include <netlistmgr.h>
@@ -77,24 +78,38 @@ inline string imeGuidKey(string value) {
     return value;
 }
 
-/// Support table. Adding an input method means adding one row; enumeration does not change.
-struct ImeSupport { const char* tip; const char* profile; const char* model; };
+/// Support table. A row identifies one installed input method by its GUIDs; the active flag decides
+/// whether this build may start that input method's voice pipeline. Inactive rows keep their labels,
+/// icons and saved results but are shown as "not supported yet" and cannot start.
+struct ImeSupport { const char* tip; const char* profile; const char* model; bool active; };
 inline const ImeSupport* imeSupportRows(size_t& count) {
     static const ImeSupport rows[] = {
-        {"{86598fb9-66a2-463e-b9c2-aeb906d477ad}", "{607fdf85-fcc8-4dbd-a365-41296f980c9c}", "wetype"},
-        {"{9d2b2e2b-3c93-4d2f-9d35-6eeb85f0d2b0}", "{2b4d4b3a-4d4f-4c0a-8e66-7f771a2b9c10}", "doubao"},
-        {"{b722b5d7-0c4c-4933-a7b9-df8c91f2c643}", "{0c7479af-f27f-488c-a46b-5bda6bf43e50}", "iflytek"},
-        {"{e7ea138e-69f8-11d7-a6ea-00065b844310}", "{e7ea138f-69f8-11d7-a6ea-00065b844311}", "sogou"},
-        {"{dcbd6fa8-032f-11d3-b5b1-00c04fc324a1}", "{6a114e62-e11b-447f-9a58-2d354f5c9204}", "windows"},
+        {"{86598fb9-66a2-463e-b9c2-aeb906d477ad}", "{607fdf85-fcc8-4dbd-a365-41296f980c9c}", "wetype", true},
+        {"{9d2b2e2b-3c93-4d2f-9d35-6eeb85f0d2b0}", "{2b4d4b3a-4d4f-4c0a-8e66-7f771a2b9c10}", "doubao", false},
+        {"{b722b5d7-0c4c-4933-a7b9-df8c91f2c643}", "{0c7479af-f27f-488c-a46b-5bda6bf43e50}", "iflytek", false},
+        {"{e7ea138e-69f8-11d7-a6ea-00065b844310}", "{e7ea138f-69f8-11d7-a6ea-00065b844311}", "sogou", false},
+        {"{dcbd6fa8-032f-11d3-b5b1-00c04fc324a1}", "{6a114e62-e11b-447f-9a58-2d354f5c9204}", "windows", false},
     };
     count = sizeof(rows) / sizeof(rows[0]); return rows;
 }
-inline const char* supportedImeModel(const string& tip, const string& profile) {
+/// Any known table row, active or not: resolves the model name used for labels, icons and saved results.
+inline const char* imeKnownModel(const string& tip, const string& profile) {
     const string tipKey = imeGuidKey(tip), profileKey = imeGuidKey(profile);
     size_t count = 0; const ImeSupport* rows = imeSupportRows(count);
     for (size_t index = 0; index < count; ++index) if (tipKey == rows[index].tip && profileKey == rows[index].profile) return rows[index].model;
     return nullptr;
 }
+/// True for the input methods this build can actually drive; only WeChat Input is active for now.
+inline bool imeActiveModel(const string& model) {
+    size_t count = 0; const ImeSupport* rows = imeSupportRows(count);
+    for (size_t index = 0; index < count; ++index) if (model == rows[index].model) return rows[index].active;
+    return false;
+}
+inline const char* supportedImeModel(const string& tip, const string& profile) {
+    const char* model = imeKnownModel(tip, profile);
+    return model && imeActiveModel(model) ? model : nullptr;
+}
+/// True for every table model, including inactive ones, so saved results and labels keep working.
 inline bool imeResultModel(const string& model) {
     size_t count = 0; const ImeSupport* rows = imeSupportRows(count);
     for (size_t index = 0; index < count; ++index) if (model == rows[index].model) return true;
@@ -236,6 +251,31 @@ inline HRESULT imeThreadCom(bool& uninit) {
     uninit = hr == S_OK || hr == S_FALSE; return hr;
 }
 
+/// Run one Text Services call on a short-lived apartment-threaded worker. The multithreaded
+/// apartment used elsewhere hides installed third-party TIPs from ITfInputProcessorProfileMgr,
+/// so enumeration and profile activation both need STA COM to see input methods such as Sogou,
+/// Doubao and iFlytek at all.
+template <typename F>
+inline auto imeStaThread(F&& body) -> decltype(body()) {
+    if constexpr (std::is_void_v<decltype(body())>) {
+        std::thread worker([&] {
+            if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) return;
+            body();
+            CoUninitialize();
+        });
+        worker.join();
+    } else {
+        decltype(body()) value{};
+        std::thread worker([&] {
+            if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) return;
+            value = body();
+            CoUninitialize();
+        });
+        worker.join();
+        return value;
+    }
+}
+
 inline bool systemHasInternet() {
     bool uninit = false; imeThreadCom(uninit);
     INetworkListManager* manager = nullptr;
@@ -298,34 +338,37 @@ inline wstring findVirtualCableId(const wstring& preferred = L"") {
 /// List enabled text services. Installed-but-disabled profiles are omitted; unsupported ones are still returned.
 inline std::vector<LiveImeEntry> enumerateEnabledImes() {
     std::vector<LiveImeEntry> found;
-    bool uninit = false; imeThreadCom(uninit);
-    ITfInputProcessorProfiles* profiles = nullptr;
-    if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
-        ITfInputProcessorProfileMgr* manager = nullptr;
-        if (SUCCEEDED(profiles->QueryInterface(IID_PPV_ARGS(&manager)))) {
-            IEnumTfInputProcessorProfiles* enumerator = nullptr;
-            if (SUCCEEDED(manager->EnumProfiles(0, &enumerator)) && enumerator) {
-                TF_INPUTPROCESSORPROFILE profile{};
-                while (enumerator->Next(1, &profile, NULL) == S_OK) {
-                    if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR || (profile.dwFlags & TF_IPP_FLAG_ENABLED) == 0) continue;
-                    BSTR description = nullptr;
-                    profiles->GetLanguageProfileDescription(profile.clsid, profile.langid, profile.guidProfile, &description);
-                    LiveImeEntry row;
-                    row.name = description ? description : L"";
-                    if (description) SysFreeString(description);
-                    row.tip = guidString(profile.clsid); row.profile = guidString(profile.guidProfile);
-                    if (const char* model = supportedImeModel(row.tip, row.profile)) { row.model = model; row.supported = true; }
-                    if (row.name.empty()) row.name = utf8ToWide(row.tip);
-                    row.name = imeShortName(row.name);
-                    found.push_back(std::move(row));
+    // Apartment-threaded COM: the multithreaded apartment does not report third-party TIPs.
+    imeStaThread([&] {
+        ITfInputProcessorProfiles* profiles = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
+            ITfInputProcessorProfileMgr* manager = nullptr;
+            if (SUCCEEDED(profiles->QueryInterface(IID_PPV_ARGS(&manager)))) {
+                IEnumTfInputProcessorProfiles* enumerator = nullptr;
+                if (SUCCEEDED(manager->EnumProfiles(0, &enumerator)) && enumerator) {
+                    TF_INPUTPROCESSORPROFILE profile{};
+                    while (enumerator->Next(1, &profile, NULL) == S_OK) {
+                        if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR || (profile.dwFlags & TF_IPP_FLAG_ENABLED) == 0) continue;
+                        BSTR description = nullptr;
+                        profiles->GetLanguageProfileDescription(profile.clsid, profile.langid, profile.guidProfile, &description);
+                        LiveImeEntry row;
+                        row.name = description ? description : L"";
+                        if (description) SysFreeString(description);
+                        row.tip = guidString(profile.clsid); row.profile = guidString(profile.guidProfile);
+                        // Known rows keep their model name for labels and saved results; only active rows start.
+                        if (const char* model = imeKnownModel(row.tip, row.profile)) row.model = model;
+                        row.supported = supportedImeModel(row.tip, row.profile) != nullptr;
+                        if (row.name.empty()) row.name = utf8ToWide(row.tip);
+                        row.name = imeShortName(row.name);
+                        found.push_back(std::move(row));
+                    }
+                    enumerator->Release();
                 }
-                enumerator->Release();
+                manager->Release();
             }
-            manager->Release();
+            profiles->Release();
         }
-        profiles->Release();
-    }
-    if (uninit) CoUninitialize();
+    });
     size_t supportCount = 0; const ImeSupport* support = imeSupportRows(supportCount);
     for (size_t index = 0; index < supportCount; ++index) {
         bool present = false;
@@ -953,6 +996,32 @@ inline bool imeNoticeVisible(const wchar_t* mark) {
     return query.second;
 }
 
+/// Windows the iFlytek background service already owned before this process started. Its floating
+/// bar is always visible and passes the panel test, so it is remembered here and never reported.
+inline const std::set<HWND>& imeIflyResident() {
+    static std::set<HWND> resident = [] {
+        std::set<HWND> found;
+        DWORD pids[16]{}; int count = 0;
+        PROCESSENTRY32W entry{sizeof(entry)};
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot != INVALID_HANDLE_VALUE) {
+            if (Process32FirstW(snapshot, &entry)) do {
+                if (count < 16 && (_wcsicmp(entry.szExeFile, L"iFlyVoice.exe") == 0 || _wcsicmp(entry.szExeFile, L"iFlyInput.exe") == 0)) pids[count++] = entry.th32ProcessID;
+            } while (Process32NextW(snapshot, &entry));
+            CloseHandle(snapshot);
+        }
+        struct Ctx { DWORD* pids; int count; std::set<HWND>* found; } ctx{pids, count, &found};
+        EnumWindows([](HWND window, LPARAM param) -> BOOL {
+            auto* ctx = reinterpret_cast<Ctx*>(param);
+            DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+            for (int index = 0; index < ctx->count; ++index) if (ctx->pids[index] == pid) { ctx->found->insert(window); break; }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&ctx));
+        return found;
+    }();
+    return resident;
+}
+
 /// Locate the visible voice panel of one input method.
 inline HWND findImeVoiceWindow(const string& model) {
     struct Query { const string* model; HWND found; };
@@ -960,6 +1029,10 @@ inline HWND findImeVoiceWindow(const string& model) {
     EnumWindows([](HWND window, LPARAM param) -> BOOL {
         auto* query = reinterpret_cast<Query*>(param);
         if (!IsWindowVisible(window)) return TRUE;
+        // iFlyVoice keeps a resident floating bar whose window matches the voice-panel test, so a
+        // transcription would otherwise read the taskbar underneath it. Only windows that appeared
+        // after this process started count as a panel.
+        if (*query->model == "iflytek" && imeIflyResident().count(window)) return TRUE;
         wchar_t title[256]{}, klass[128]{}; GetWindowTextW(window, title, 256); GetClassNameW(window, klass, 128);
         wstring text = title;
         while (!text.empty() && iswspace(text.front())) text.erase(text.begin());
@@ -1288,45 +1361,47 @@ inline ImeProfileHold& fileProfileHold() { static ImeProfileHold value; return v
 
 inline void imeRestoreProfile(ImeProfileHold& hold) {
     if (!hold.armed) return;
-    bool uninit = false; imeThreadCom(uninit);
-    ITfInputProcessorProfiles* profiles = nullptr;
-    if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
-        ITfInputProcessorProfileMgr* manager = nullptr;
-        if (SUCCEEDED(profiles->QueryInterface(IID_PPV_ARGS(&manager)))) {
-            manager->ActivateProfile(hold.type, hold.lang, hold.clsid, hold.profile, hold.layout, TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
-            manager->Release();
+    // Apartment-threaded COM, as in enumeration: activation must also see third-party TIPs.
+    imeStaThread([&] {
+        ITfInputProcessorProfiles* profiles = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
+            ITfInputProcessorProfileMgr* manager = nullptr;
+            if (SUCCEEDED(profiles->QueryInterface(IID_PPV_ARGS(&manager)))) {
+                manager->ActivateProfile(hold.type, hold.lang, hold.clsid, hold.profile, hold.layout, TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
+                manager->Release();
+            }
+            profiles->Release();
         }
-        profiles->Release();
-    }
-    if (uninit) CoUninitialize();
+    });
     hold.armed = false;
 }
 
 /// Make the selected input method current so its voice shortcut is live, and remember the previous one.
 inline void imeActivateModel(const string& model, ImeProfileHold& hold) {
     if (!imeResultModel(model) || model == "windows") return;
-    bool uninit = false; imeThreadCom(uninit);
-    ITfInputProcessorProfiles* profiles = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) { if (uninit) CoUninitialize(); return; }
-    ITfInputProcessorProfileMgr* manager = nullptr;
-    if (FAILED(profiles->QueryInterface(IID_PPV_ARGS(&manager)))) { profiles->Release(); if (uninit) CoUninitialize(); return; }
-    IEnumTfInputProcessorProfiles* enumerator = nullptr;
-    if (SUCCEEDED(manager->EnumProfiles(0, &enumerator)) && enumerator) {
-        TF_INPUTPROCESSORPROFILE profile{}; TF_INPUTPROCESSORPROFILE active{}; bool had = false; bool foundTarget = false; TF_INPUTPROCESSORPROFILE target{};
-        while (enumerator->Next(1, &profile, NULL) == S_OK) {
-            if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR) continue;
-            if ((profile.dwFlags & TF_IPP_FLAG_ACTIVE) != 0) { active = profile; had = true; }
-            const char* found = supportedImeModel(guidString(profile.clsid), guidString(profile.guidProfile));
-            if (found && model == found) { target = profile; foundTarget = true; }
+    // Apartment-threaded COM, as in enumeration: MTA hides third-party TIPs from EnumProfiles.
+    imeStaThread([&] {
+        ITfInputProcessorProfiles* profiles = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) return;
+        ITfInputProcessorProfileMgr* manager = nullptr;
+        if (FAILED(profiles->QueryInterface(IID_PPV_ARGS(&manager)))) { profiles->Release(); return; }
+        IEnumTfInputProcessorProfiles* enumerator = nullptr;
+        if (SUCCEEDED(manager->EnumProfiles(0, &enumerator)) && enumerator) {
+            TF_INPUTPROCESSORPROFILE profile{}; TF_INPUTPROCESSORPROFILE active{}; bool had = false; bool foundTarget = false; TF_INPUTPROCESSORPROFILE target{};
+            while (enumerator->Next(1, &profile, NULL) == S_OK) {
+                if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR) continue;
+                if ((profile.dwFlags & TF_IPP_FLAG_ACTIVE) != 0) { active = profile; had = true; }
+                const char* found = supportedImeModel(guidString(profile.clsid), guidString(profile.guidProfile));
+                if (found && model == found) { target = profile; foundTarget = true; }
+            }
+            enumerator->Release();
+            const bool same = foundTarget && had && IsEqualGUID(active.clsid, target.clsid) && IsEqualGUID(active.guidProfile, target.guidProfile);
+            if (foundTarget && !same && SUCCEEDED(manager->ActivateProfile(target.dwProfileType, target.langid, target.clsid, target.guidProfile, target.hkl, TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE)) && had) {
+                hold.armed = true; hold.type = active.dwProfileType; hold.lang = active.langid; hold.clsid = active.clsid; hold.profile = active.guidProfile; hold.layout = active.hkl;
+            }
         }
-        enumerator->Release();
-        const bool same = foundTarget && had && IsEqualGUID(active.clsid, target.clsid) && IsEqualGUID(active.guidProfile, target.guidProfile);
-        if (foundTarget && !same && SUCCEEDED(manager->ActivateProfile(target.dwProfileType, target.langid, target.clsid, target.guidProfile, target.hkl, TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE)) && had) {
-            hold.armed = true; hold.type = active.dwProfileType; hold.lang = active.langid; hold.clsid = active.clsid; hold.profile = active.guidProfile; hold.layout = active.hkl;
-        }
-    }
-    manager->Release(); profiles->Release();
-    if (uninit) CoUninitialize();
+        manager->Release(); profiles->Release();
+    });
 }
 
 inline void SpeechService::recordingStarted(const wstring& wav) {
@@ -1453,13 +1528,15 @@ inline HICON loadTipIcon(const string& tip, const string& profile) {
     return icon;
 }
 
-/// Small icon plus the system names of installed input methods this build can drive.
+/// Small icon plus the system names of the input methods this build can drive. The preferred model
+/// may be an inactive table row, so a saved result keeps its icon while the tooltip stays support-only.
 inline HICON supportedImeIcon(wstring& names, const string& preferred) {
     names.clear(); string tip, profile;
     for (const auto& ime : enumerateEnabledImes()) {
-        if (!ime.supported) continue;
-        if (!names.empty()) names += L"\n";
-        names += ime.name;
+        if (ime.supported) {
+            if (!names.empty()) names += L"\n";
+            names += ime.name;
+        }
         if (ime.model == preferred) { tip = ime.tip; profile = ime.profile; }
     }
     return tip.empty() ? NULL : loadTipIcon(tip, profile);

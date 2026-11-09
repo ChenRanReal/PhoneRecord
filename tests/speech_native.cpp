@@ -143,11 +143,18 @@ int main() {
     assert(!imeChordFromSogouCode(0, chord));
     assert(supportedImeModel("{86598FB9-66A2-463E-B9C2-AEB906D477AD}", "{607FDF85-FCC8-4DBD-A365-41296F980C9C}") != nullptr);
     assert(std::string(supportedImeModel("{86598FB9-66A2-463E-B9C2-AEB906D477AD}", "{607FDF85-FCC8-4DBD-A365-41296F980C9C}")) == "wetype");
-    assert(std::string(supportedImeModel("{9D2B2E2B-3C93-4D2F-9D35-6EEB85F0D2B0}", "{2B4D4B3A-4D4F-4C0A-8E66-7F771A2B9C10}")) == "doubao");
-    assert(std::string(supportedImeModel("{B722B5D7-0C4C-4933-A7B9-DF8C91F2C643}", "{0C7479AF-F27F-488C-A46B-5BDA6BF43E50}")) == "iflytek");
-    assert(std::string(supportedImeModel("{E7EA138E-69F8-11D7-A6EA-00065B844310}", "{E7EA138F-69F8-11D7-A6EA-00065B844311}")) == "sogou");
-    assert(std::string(supportedImeModel("{DCBD6FA8-032F-11D3-B5B1-00C04FC324A1}", "{6A114E62-E11B-447F-9A58-2D354F5C9204}")) == "windows");
+    assert(imeActiveModel("wetype") && !imeActiveModel("doubao") && !imeActiveModel("iflytek") && !imeActiveModel("sogou") && !imeActiveModel("windows") && !imeActiveModel(""));
+    assert(imeResultModel("doubao") && imeResultModel("iflytek") && imeResultModel("sogou") && imeResultModel("windows") && !imeResultModel("microsoft"));
+    assert(std::string(imeKnownModel("{9D2B2E2B-3C93-4D2F-9D35-6EEB85F0D2B0}", "{2B4D4B3A-4D4F-4C0A-8E66-7F771A2B9C10}")) == "doubao");
+    assert(std::string(imeKnownModel("{B722B5D7-0C4C-4933-A7B9-DF8C91F2C643}", "{0C7479AF-F27F-488C-A46B-5BDA6BF43E50}")) == "iflytek");
+    assert(std::string(imeKnownModel("{E7EA138E-69F8-11D7-A6EA-00065B844310}", "{E7EA138F-69F8-11D7-A6EA-00065B844311}")) == "sogou");
+    assert(std::string(imeKnownModel("{DCBD6FA8-032F-11D3-B5B1-00C04FC324A1}", "{6A114E62-E11B-447F-9A58-2D354F5C9204}")) == "windows");
+    assert(supportedImeModel("{9D2B2E2B-3C93-4D2F-9D35-6EEB85F0D2B0}", "{2B4D4B3A-4D4F-4C0A-8E66-7F771A2B9C10}") == nullptr);
+    assert(supportedImeModel("{B722B5D7-0C4C-4933-A7B9-DF8C91F2C643}", "{0C7479AF-F27F-488C-A46B-5BDA6BF43E50}") == nullptr);
+    assert(supportedImeModel("{E7EA138E-69F8-11D7-A6EA-00065B844310}", "{E7EA138F-69F8-11D7-A6EA-00065B844311}") == nullptr);
+    assert(supportedImeModel("{DCBD6FA8-032F-11D3-B5B1-00C04FC324A1}", "{6A114E62-E11B-447F-9A58-2D354F5C9204}") == nullptr);
     assert(supportedImeModel("微信输入法", "{607FDF85-FCC8-4DBD-A365-41296F980C9C}") == nullptr);
+    assert(imeKnownModel("微信输入法", "{607FDF85-FCC8-4DBD-A365-41296F980C9C}") == nullptr);
     const auto imeWav = root / L"recordings" / L"2026-11-06" / L"ime.wav";
     { std::ofstream out(imeWav, std::ios::binary); out << "RIFFime"; }
     const wstring senseJson = imeWav.wstring() + L".transcript.json";

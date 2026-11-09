@@ -281,7 +281,8 @@ private:
         int pick=-1, firstSupported=-1;
         for(int index=0; index<static_cast<int>(imes_.size()); ++index) {
             const auto& item=imes_[index];
-            const wstring shown=item.supported?sourceCaptionFor(item.model):item.name;
+            const wstring named=sourceCaptionFor(item.model);
+            const wstring shown=(item.supported||!named.empty())?named:item.name;
             const wstring label=(shown.empty()?item.name:shown)+L" · "+uiText(item.supported?"speech.ime_supported":"speech.ime_unsupported_tag");
             SendMessageW(imes,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str()));
             if(imes_[index].supported && firstSupported<0) firstSupported=index;
@@ -658,6 +659,7 @@ private:
             if(id==32&&self->configure()){
                 const string model=self->provider();
                 if(!g_speech.state().historyEnabled)self->notice(uiText("speech.history_off"),true);
+                else if(imeResultModel(model)&&!imeActiveModel(model))self->notice(uiText("speech.ime_blocked"),true);
                 else if(imeResultModel(model)) self->startImeFile(model);
                 else if(!g_speech.readyFor(model))self->notice(uiText("speech.module_needed"),true);
                 else {self->resultModel_=model;SendMessageW(GetDlgItem(window,34),CB_SETCURSEL,self->versionIndex(model),0);if(!g_speech.enqueue(self->wav_,false,model))self->notice(uiText("speech.admission_failed"),true);else{self->localError_.clear();self->localErrorFail_=false;}}

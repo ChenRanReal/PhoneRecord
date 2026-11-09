@@ -614,7 +614,7 @@ static const UiTextEntry kUiTexts[] = {
     {"speech.ime_fallback", L"已改用本机识别", L"已改用本機辨識", L"Switched to on-device recognition"},
     {"speech.ime_no_device", L"未找到播放设备", L"未找到播放裝置", L"Playback device not found"},
     {"speech.ime_unsupported", L"此输入法暂不支持", L"此輸入法暫不支援", L"This input method is not supported yet"},
-    {"speech.ime_blocked", L"初版尚未接入此输入法，不能开始", L"初版尚未接入此輸入法，不能開始", L"This input method is not connected in this version and cannot start"},
+    {"speech.ime_blocked", L"当前仅支持微信输入法，其他输入法暂不支持，不能开始。", L"當前僅支援微信輸入法，其他輸入法暫不支援，不能開始。", L"Only WeChat Input is supported for now; other input methods cannot start."},
     {"speech.ime_icon_tip", L"支持的输入法", L"支援的輸入法", L"Supported input methods"},
     {"speech.source_wetype", L"微信输入法", L"微信输入法", L"微信输入法"},
     {"speech.source_doubao", L"豆包输入法", L"豆包输入法", L"豆包输入法"},
