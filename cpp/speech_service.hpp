@@ -2,6 +2,13 @@
 
 #ifdef _WIN64
 #include <filesystem>
+#include <atomic>
+
+/// Shared switch for the input-method focus hold: true (default) pauses feeding file audio while
+/// another program is in front, because the input method types recognized text into whatever input
+/// box then has the cursor — its own behavior, which cannot be intercepted from outside. False is
+/// an explicit user opt-in to background playback with that typing risk.
+inline std::atomic<bool>& imeFocusPause() { static std::atomic<bool> value{true}; return value; }
 
 /// Stable speech observation copied under the coordinator mutex; no transcript in diagnostics.
 struct SpeechState {
@@ -84,6 +91,7 @@ public:
         liveSource_ = jsonField(saved,"liveSource") == "hf-mirror.com" ? "hf-mirror.com" : "huggingface.co";
         liveEngine_ = jsonField(saved,"liveEngine") == "ime" ? "ime" : "sense";
         liveImeTip_ = jsonField(saved,"liveImeTip"); liveImeProfile_ = jsonField(saved,"liveImeProfile"); liveDevice_ = jsonField(saved,"liveDevice");
+        imeFocusPause().store(jsonField(saved,"imeFocusPause") != "0");
         state_.liveEngine = liveEngine_;
         state_.installed = installed(selectedModel_);
         state_.step = state_.enabled ? state_.installed ? "standby" : "unprepared" : "off";
@@ -214,6 +222,14 @@ public:
     void liveImeSelection(string& tip, string& profile, string& device) const {
         std::lock_guard<std::mutex> lock(mutex_); tip = liveImeTip_; profile = liveImeProfile_; device = liveDevice_;
     }
+    /// Persist whether file transcription pauses while another program is in front (the safe default),
+    /// so the input method cannot type into that program's focused input box.
+    bool selectImeFocusPause(bool pause) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        imeFocusPause().store(pause);
+        if (!write(config_, preferences(state_.enabled, language_, source_, state_.liveEnabled))) { imeFocusPause().store(!pause); return false; }
+        ++state_.revision; return true;
+    }
     /// Read the explicit SenseVoice model source.
     string liveSource() const { std::lock_guard<std::mutex> lock(mutex_); return liveSource_; }
     /// Request explicit first-use setup; no installer is launched by ordinary transcription.
@@ -330,7 +346,7 @@ private:
     bool savePreferences() { return write(config_,preferences(state_.enabled,language_,source_,state_.liveEnabled)); }
     /// Serialize both modules together so editing either preserves the other's defaults.
     string preferences(bool enabled,const string& language,const string& source,bool live) const {
-        return "{\"enabled\":\"" + string(enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language) + ",\"source\":" + jsonQuoted(source) + ",\"model\":" + jsonQuoted(selectedModel_) + ",\"liveEnabled\":\"" + string(live ? "1" : "0") + "\",\"historyEnabled\":\"" + string(state_.historyEnabled ? "1" : "0") + "\",\"liveLanguage\":" + jsonQuoted(liveLanguage_) + ",\"liveSource\":" + jsonQuoted(liveSource_) + ",\"liveEngine\":" + jsonQuoted(liveEngine_) + ",\"liveImeTip\":" + jsonQuoted(liveImeTip_) + ",\"liveImeProfile\":" + jsonQuoted(liveImeProfile_) + ",\"liveDevice\":" + jsonQuoted(liveDevice_) + "}";
+        return "{\"enabled\":\"" + string(enabled ? "1" : "0") + "\",\"language\":" + jsonQuoted(language) + ",\"source\":" + jsonQuoted(source) + ",\"model\":" + jsonQuoted(selectedModel_) + ",\"liveEnabled\":\"" + string(live ? "1" : "0") + "\",\"historyEnabled\":\"" + string(state_.historyEnabled ? "1" : "0") + "\",\"liveLanguage\":" + jsonQuoted(liveLanguage_) + ",\"liveSource\":" + jsonQuoted(liveSource_) + ",\"liveEngine\":" + jsonQuoted(liveEngine_) + ",\"liveImeTip\":" + jsonQuoted(liveImeTip_) + ",\"liveImeProfile\":" + jsonQuoted(liveImeProfile_) + ",\"liveDevice\":" + jsonQuoted(liveDevice_) + ",\"imeFocusPause\":\"" + string(imeFocusPause().load() ? "1" : "0") + "\"}";
     }
     /// Check the exact provider-supported language set.
     static bool validLanguage(const string& value) { return value == "auto" || value == "zh" || value == "en" || value == "yue" || value == "ja" || value == "ko"; }

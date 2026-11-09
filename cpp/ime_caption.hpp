@@ -6,6 +6,8 @@
 #include <mmreg.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <audiopolicy.h>
+#include <tlhelp32.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <msctf.h>
 #include <netlistmgr.h>
@@ -569,6 +571,59 @@ inline wstring readImeVoicePanel(const string& model) {
 struct ImeLiveOwner;
 /// Defined with the panel helpers below; declared here so a finished session can end the voice bar.
 inline void closeImeVoice(const string& model);
+/// Defined further down; the playback owner watches the bar and can reopen it.
+inline bool imeVoiceVisible(const string& model);
+inline DWORD imeProcessId(const wchar_t* exe);
+inline bool captureStreamActive(DWORD pid);
+inline void launchImeVoice(const string& model);
+
+/// True when the window the user is working in belongs to this process. The input method commits
+/// recognized text into the focused control, so only our own foreground is safe.
+inline bool imeForegroundOwned() {
+    HWND foreground = GetForegroundWindow();
+    if (!foreground) return false;
+    DWORD pid = 0; GetWindowThreadProcessId(foreground, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+/// Briefly make one of this process's windows the foreground window, so an input-method session that
+/// ends while the user works elsewhere commits its text into our own window instead of their app.
+/// The previous foreground window is restored on destruction.
+struct ForegroundBorrow {
+    HWND previous_ = NULL, ours_ = NULL;
+    bool borrowed_ = false;
+    explicit ForegroundBorrow(bool needed) {
+        if (!needed || imeForegroundOwned()) return;
+        previous_ = GetForegroundWindow();
+        struct Ctx { DWORD pid; HWND found; } ctx{GetCurrentProcessId(), NULL};
+        EnumWindows([](HWND window, LPARAM lparam) -> BOOL {
+            Ctx* c = reinterpret_cast<Ctx*>(lparam);
+            DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+            if (pid != c->pid || !IsWindowVisible(window) || !(GetWindowLongW(window, GWL_STYLE) & WS_CAPTION)) return TRUE;
+            wchar_t title[64]{};
+            // Helper and tooltip windows have no title; the main window does.
+            if (!GetWindowTextW(window, title, 64) || !title[0]) return TRUE;
+            c->found = window; return FALSE;
+        }, reinterpret_cast<LPARAM>(&ctx));
+        if (!ctx.found) return;
+        ours_ = ctx.found;
+        const DWORD foregroundThread = previous_ ? GetWindowThreadProcessId(previous_, NULL) : 0;
+        const DWORD ownThread = GetCurrentThreadId();
+        if (foregroundThread && foregroundThread != ownThread) AttachThreadInput(ownThread, foregroundThread, TRUE);
+        ShowWindow(ours_, IsIconic(ours_) ? SW_SHOWMINNOACTIVE : SW_SHOWNOACTIVATE);
+        SetForegroundWindow(ours_); BringWindowToTop(ours_);
+        if (foregroundThread && foregroundThread != ownThread) AttachThreadInput(ownThread, foregroundThread, FALSE);
+        borrowed_ = GetForegroundWindow() == ours_;
+        if (borrowed_) Sleep(200);
+    }
+    ~ForegroundBorrow() {
+        if (!borrowed_) return;
+        Sleep(400);
+        if (previous_ && IsWindow(previous_)) SetForegroundWindow(previous_);
+    }
+    ForegroundBorrow(const ForegroundBorrow&) = delete;
+    ForegroundBorrow& operator=(const ForegroundBorrow&) = delete;
+};
 
 /// File transcription shares one playback owner with the page that started it.
 /// Live captions do not publish progress here, so a closed page can still show time and text.
@@ -600,17 +655,21 @@ private:
 /// Owns the playback and panel threads for one live recording.
 struct ImeLiveOwner : std::enable_shared_from_this<ImeLiveOwner> {
     /// Prepare one call. Threads start only from start(), after the service has published this owner.
-    ImeLiveOwner(wstring wav, wstring deviceId, string model, std::function<void(const char*)> fallback, bool filePlayback = false)
-        : wav_(std::move(wav)), deviceId_(std::move(deviceId)), model_(std::move(model)), fallback_(std::move(fallback)), filePlayback_(filePlayback) {}
-    /// Start playback and the panel reader. Neither thread activates another window.
+    /// ownCaption means the input method already draws the recognized sentence itself; this owner then
+    /// only feeds audio and leaves that caption on screen instead of reading a duplicate.
+    ImeLiveOwner(wstring wav, wstring deviceId, string model, std::function<void(const char*)> fallback, bool filePlayback = false, bool ownCaption = false)
+        : wav_(std::move(wav)), deviceId_(std::move(deviceId)), model_(std::move(model)), fallback_(std::move(fallback)), filePlayback_(filePlayback), ownCaption_(ownCaption) {}
+    /// Start playback, the panel reader, and the voice-bar watchdog. None of them activates another window.
     void start() {
         if (started_.exchange(true)) return;
         audio_ = std::thread([this] { audioMain(); });
-        reader_ = std::thread([this] { readerMain(); });
+        if (!ownCaption_) reader_ = std::thread([this] { readerMain(); });
+        watchdog_ = std::thread([this] { watchMain(); });
     }
     void pushDrop(const int16_t* pcm, int count) { if (!stop_.load()) queue_.pushDrop(pcm, count); }
     bool pushFit(const int16_t* pcm, int count) { return !stop_.load() && queue_.pushFit(pcm, count); }
     bool stopped() const { return stop_.load(); }
+    /// False while the voice bar is gone, so a file feed can hold instead of playing into nothing.
     void requestStop() { stop_.store(true); drained_.notify_all(); }
     /// Queue the hangup tail, then wait until the device clock has played it or the wait bound elapses.
     void finishTail() {
@@ -627,6 +686,7 @@ struct ImeLiveOwner : std::enable_shared_from_this<ImeLiveOwner> {
         std::unique_lock<std::mutex> lock(waitMutex_);
         drained_.wait_for(lock, std::chrono::milliseconds(done > GetTickCount64() ? done - GetTickCount64() : 1), [&] { return audioDrained_.load() || stop_.load(); });
         lock.unlock();
+        if (ownCaption_) { requestStop(); return; }
         const auto visible = GetTickCount64() + 8000;
         do { capturePanel(false); if (!text().empty()) break; Sleep(400); } while (GetTickCount64() < visible);
         capturePanel(true);
@@ -636,6 +696,7 @@ struct ImeLiveOwner : std::enable_shared_from_this<ImeLiveOwner> {
         requestStop();
         if (audio_.joinable()) audio_.join();
         if (reader_.joinable()) reader_.join();
+        if (watchdog_.joinable()) watchdog_.join();
     }
     string text() const { std::lock_guard<std::mutex> lock(textMutex_); return shown_; }
 private:
@@ -660,6 +721,7 @@ private:
         publishImeTranscript(wav_, segments_, seconds_, complete, model_, original_, polished_, filePlayback_);
     }
     void capturePanel(bool complete) {
+        if (ownCaption_) return;
         const wstring panel = readImeVoicePanel(model_);
         if (!panel.empty() || complete) remember(panel, complete);
     }
@@ -674,6 +736,27 @@ private:
             Sleep(300);
         }
         if (uninit) CoUninitialize();
+    }
+    /// Bring the voice bar back if it closed by itself. Playback must not stop just because the bar
+    /// vanished, and a hidden WeChat bar can still be listening, so the capture stream decides.
+    void watchMain() {
+        // The bar takes a few seconds to appear after the shortcut, so relaunching starts later.
+        for (int tick = 0; tick < 12 && !stop_.load(); ++tick) Sleep(500);
+        int relaunched = 0; ULONGLONG missingSince = 0;
+        while (!stop_.load()) {
+            Sleep(500);
+            if (stop_.load()) break;
+            const bool listening = model_ == "wetype"
+                ? imeVoiceVisible(model_) || captureStreamActive(imeProcessId(L"wetype_update.exe"))
+                : imeVoiceVisible(model_);
+            if (listening) { missingSince = 0; continue; }
+            if (!missingSince) { missingSince = GetTickCount64(); continue; }
+            if (GetTickCount64() - missingSince < 3000 || relaunched >= 3) continue;
+            // A bar reopened while another app is in front types its text into that app's input box.
+            // Hold the feed instead and wait for the user to come back.
+            if (!imeForegroundOwned()) continue;
+            ++relaunched; missingSince = 0; launchImeVoice(model_);
+        }
     }
     void audioMain() {
         bool uninit = false; imeThreadCom(uninit);
@@ -725,7 +808,7 @@ private:
     std::function<void(const char*)> fallback_;
     ImePcmQueue queue_;
     ImeResampler resampler_;
-    std::thread audio_, reader_;
+    std::thread audio_, reader_, watchdog_;
     std::atomic<bool> started_{false}, stop_{false}, tail_{false}, audioDrained_{false}, audioHeard_{false}, failed_{false};
     std::atomic<ULONGLONG> lastText_{0};
     std::mutex waitMutex_;
@@ -735,6 +818,7 @@ private:
     std::vector<std::pair<double, string>> segments_;
     double seconds_ = 0;
     bool filePlayback_ = false;
+    bool ownCaption_ = false;
 };
 
 inline std::shared_ptr<ImeLiveOwner>& ImeFileSession::owner() {
@@ -761,7 +845,9 @@ inline void SpeechService::armLive(const wstring& wav, const string& engine, con
         return;
     }
     const char* model = supportedImeModel(tip, profile); if (!model) model = "wetype";
-    auto owner = std::make_shared<ImeLiveOwner>(wav, utf8ToWide(device), model, [this](const char* phase) { fallbackFromIme(phase); });
+    // WeChat's voice bar draws the recognized sentence itself, so live captions read that bar instead of
+    // mirroring a second copy into this program.
+    auto owner = std::make_shared<ImeLiveOwner>(wav, utf8ToWide(device), model, [this](const char* phase) { fallbackFromIme(phase); }, false, string(model) == "wetype");
     { std::lock_guard<std::mutex> lock(imeMutex_); imeOwner_ = owner; }
     imeActive_.store(true); starting = std::move(owner);
 }
@@ -796,9 +882,10 @@ inline void SpeechService::finishIme(const wstring& wav) {
     if (tail) owner->finishTail(); else owner->requestStop();
     owner->join();
     // The bar keeps recording the room after the call; close it so the input method stops listening.
+    // Ending it commits the pending text into the focused control, so borrow our own foreground.
     string tip, profile;
     { std::lock_guard<std::mutex> lock(mutex_); tip = liveImeTip_; profile = liveImeProfile_; }
-    if (const char* model = supportedImeModel(tip, profile)) closeImeVoice(model);
+    if (const char* model = supportedImeModel(tip, profile)) { ForegroundBorrow borrow(true); closeImeVoice(model); }
 }
 
 inline void SpeechService::discardImeOwner() {
@@ -809,7 +896,7 @@ inline void SpeechService::discardImeOwner() {
     owner->requestStop(); owner->join();
     string tip, profile;
     { std::lock_guard<std::mutex> lock(mutex_); tip = liveImeTip_; profile = liveImeProfile_; }
-    if (const char* model = supportedImeModel(tip, profile)) closeImeVoice(model);
+    if (const char* model = supportedImeModel(tip, profile)) { ForegroundBorrow borrow(true); closeImeVoice(model); }
 }
 
 inline void SpeechService::livePcm(const int16_t* pcm, int count) {
@@ -892,8 +979,78 @@ inline HWND findImeVoiceWindow(const string& model) {
     return query.found;
 }
 
-/// A voice panel left open by an earlier run is not listening; close it so the shortcut starts a fresh session.
+/// Closing a session needs the shortcut helpers defined further down.
+inline ImeChord voiceChord(const string& model);
+inline void sendImeChord(const ImeChord& chord);
+
+/// Process that hosts an input method's voice panel, or zero when it is not running.
+inline DWORD imeProcessId(const wchar_t* exe) {
+    PROCESSENTRY32W entry{sizeof(entry)};
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    DWORD found = 0;
+    if (Process32FirstW(snapshot, &entry)) do {
+        if (_wcsicmp(entry.szExeFile, exe) == 0) { found = entry.th32ProcessID; break; }
+    } while (Process32NextW(snapshot, &entry));
+    CloseHandle(snapshot);
+    return found;
+}
+
+/// True while that process holds an active capture stream, which is what keeps the Windows microphone indicator on.
+inline bool captureStreamActive(DWORD pid) {
+    if (!pid) return false;
+    bool uninit = false; imeThreadCom(uninit);
+    bool active = false;
+    IMMDeviceEnumerator* enumerator = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)))) {
+        IMMDeviceCollection* devices = nullptr;
+        if (SUCCEEDED(enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &devices))) {
+            UINT count = 0; devices->GetCount(&count);
+            for (UINT index = 0; index < count && !active; ++index) {
+                IMMDevice* device = nullptr;
+                if (FAILED(devices->Item(index, &device))) continue;
+                IAudioSessionManager2* manager = nullptr;
+                if (SUCCEEDED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, reinterpret_cast<void**>(&manager)))) {
+                    IAudioSessionEnumerator* sessions = nullptr;
+                    if (SUCCEEDED(manager->GetSessionEnumerator(&sessions))) {
+                        int total = 0; sessions->GetCount(&total);
+                        for (int index2 = 0; index2 < total && !active; ++index2) {
+                            IAudioSessionControl* control = nullptr;
+                            if (FAILED(sessions->GetSession(index2, &control))) continue;
+                            IAudioSessionControl2* control2 = nullptr;
+                            if (SUCCEEDED(control->QueryInterface(IID_PPV_ARGS(&control2)))) {
+                                DWORD owner = 0; AudioSessionState state = AudioSessionStateInactive;
+                                control2->GetProcessId(&owner); control->GetState(&state);
+                                if (owner == pid && state == AudioSessionStateActive) active = true;
+                                control2->Release();
+                            }
+                            control->Release();
+                        }
+                        sessions->Release();
+                    }
+                    manager->Release();
+                }
+                device->Release();
+            }
+            devices->Release();
+        }
+        enumerator->Release();
+    }
+    if (uninit) CoUninitialize();
+    return active;
+}
+
+/// WeChat's voice shortcut is a toggle: closing only the panel hides it and leaves the microphone capturing,
+/// so press the same shortcut again before tearing the window down.
+inline void stopWetypeCapture() {
+    if (!captureStreamActive(imeProcessId(L"wetype_update.exe"))) return;
+    sendImeChord(voiceChord("wetype"));
+    Sleep(400);
+}
+
 inline void resetImeVoice(const string& model) {
+    // A panel left open by an earlier run is not listening; close it so the shortcut starts a fresh session.
+    if (model == "wetype") stopWetypeCapture();
     HWND window = findImeVoiceWindow(model);
     if (!window) return;
     PostMessageW(window, WM_CLOSE, 0, 0);
@@ -906,6 +1063,7 @@ inline void resetImeVoice(const string& model) {
 /// End one voice session without waiting; the panel stops recording as soon as it closes.
 inline void closeImeVoice(const string& model) {
     if (!imeResultModel(model)) return;
+    if (model == "wetype") stopWetypeCapture();
     if (HWND window = findImeVoiceWindow(model)) PostMessageW(window, WM_CLOSE, 0, 0);
 }
 
@@ -1097,6 +1255,9 @@ inline void clickSogouListen() {
 }
 
 inline void launchImeVoice(const string& model) {
+    // A bar opened while another app is in front types its text into that app's input box, so any
+    // launch (initial or watchdog retry) waits until this program owns the foreground again.
+    if (!imeForegroundOwned()) return;
     if (model == "iflytek") ShellExecuteW(NULL, L"open", L"C:\\Program Files (x86)\\iFlytek\\iFlyIME\\3.0.1750\\iFlyVoice.exe", NULL, NULL, SW_SHOWNORMAL);
     else if (model == "sogou") { ShellExecuteW(NULL, L"open", L"C:\\Program Files (x86)\\SogouInput\\Components\\ai_voice_input\\1.0.1.3272\\bin\\sogou_voice_assistant.exe", NULL, NULL, SW_SHOWNORMAL); clickSogouListen(); }
     else if (model == "wetype") sendImeChord(voiceChord(model));
@@ -1236,9 +1397,15 @@ inline int imePlayExistingWav(const wstring& wav, const wstring& devicePrefix, s
     { std::lock_guard<std::mutex> lock(ImeFileSession::mutex()); ImeFileSession::owner() = owner; }
     ImeFileSession::running() = true;
     owner->start();
+    // The input method keeps typing recognized text into the focused input box of some apps (web
+    // and Electron edits) for as long as it hears audio. There is no way to keep dictating in the
+    // background without that, so while the hold switch is on and this program is not the
+    // foreground window the feed holds (the voice session itself stays open, so resuming is
+    // seamless) until the user comes back. Turning the switch off is an explicit opt-in to that.
     const int16_t* pcm = reinterpret_cast<const int16_t*>(bytes.data() + data);
     const auto started = GetTickCount64();
     for (size_t offset = 0; offset < samples && !owner->stopped();) {
+        if (imeFocusPause().load() && !imeForegroundOwned()) { Sleep(150); continue; }
         const size_t block = std::min<size_t>(160, samples - offset);
         if (!owner->pushFit(pcm + offset, block)) { Sleep(5); continue; }
         offset += block;
@@ -1249,7 +1416,8 @@ inline int imePlayExistingWav(const wstring& wav, const wstring& devicePrefix, s
     ImeFileSession::running() = false;
     textOut = owner->text();
     // Playback is over, so the voice session ends here instead of leaving the panel recording.
-    closeImeVoice(model);
+    // Ending it commits the pending text into the focused control, so borrow our own foreground.
+    { ForegroundBorrow borrow(true); closeImeVoice(model); }
     const unsigned elapsed = static_cast<unsigned>(GetTickCount64() - started);
     const unsigned expected = static_cast<unsigned>(samples / 8);
     int code = 0;
