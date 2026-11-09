@@ -46,42 +46,71 @@ public:
         }
         if (g_cfg.secretError) return authFailure("CREDENTIAL_DECRYPT_FAILED");
         loadCookie();
-        string head, body;
-        if (!request("GET", "/", "", head, body, idleOnly)) return idleOnly && requestDeferred_ ? false : authFailure("PHONE_UNREACHABLE");
-        if (head.find("503") != string::npos) return authFailure("PHONE_BUSY");
-        string sessionCookie = headerValue(head, "Set-Cookie");
-        const size_t auth = sessionCookie.find("auth=");
-        if (auth == string::npos) sessionCookie.clear();
-        else { sessionCookie = sessionCookie.substr(auth + 5); sessionCookie = sessionCookie.substr(0, sessionCookie.find(';')); }
-        if (!sessionCookie.empty()) cookie_ = sessionCookie;
-        if (!request("GET", "/key==nonce?now=" + std::to_string(GetTickCount64()), "", head, body, idleOnly)) return idleOnly && requestDeferred_ ? false : authFailure("AUTH_NONCE_FAILED");
-        if (head.find("503") != string::npos) return authFailure("PHONE_BUSY");
-        if (loginPage(body)) return authFailure("AUTH_NONCE_FAILED");
-        const string nonceBody = trim(body);
-        string nonce;
-        const size_t newline = nonceBody.find_first_of("\r\n");
-        for (char value : nonceBody.substr(0, newline)) if (isxdigit(static_cast<unsigned char>(value))) nonce += value;
-        if (nonce.size() > 128) return authFailure("AUTH_NONCE_FAILED");
-        LOGI("AUTH_CHALLENGE session_cookie_present=%d nonce_length=%zu", !sessionCookie.empty(), nonce.size());
-        if (nonce.size() < 8) {
-            // A successful request must enter the cache-validation branch. The previous
-            // implementation tested !request(), then cleared an otherwise valid cookie.
-            if (!cookie_.empty() && request("GET", "/record.htm", "", head, body, idleOnly) && protectedPage(head, body)) {
-                rememberRecordState(body); saveCookie(); return authSuccess("AUTH_CACHE_VALID");
-            }
-            return idleOnly && requestDeferred_ ? false : authFailure("AUTH_SESSION_INVALID");
+        // Reuse the saved session first: a fresh challenge on every launch exhausts the phone's small session table.
+        if (!cookie_.empty()) {
+            string head, body;
+            const bool valid = request("GET", "/record.htm", "", head, body, idleOnly) && protectedPage(head, body);
+            LOGI("AUTH_CACHE_PROBE valid=%d", valid);
+            if (valid) { rememberRecordState(body); saveCookie(); return authSuccess("AUTH_CACHE_VALID"); }
+            if (idleOnly && requestDeferred_) return false;
         }
-        cookie_ = nonce;
-        const string digest = Md5::hex(g_cfg.phoneUser + ":" + g_cfg.phonePass + ":" + nonce);
-        const string form = "encoded=" + urlEncode(g_cfg.phoneUser + ":" + digest) + "&CurLanguage=cn&ReturnPage=/";
-        if (!request("POST", "/", form, head, body, idleOnly)) return idleOnly && requestDeferred_ ? false : authFailure("AUTH_POST_FAILED");
-        if (head.find("503") != string::npos) return authFailure("PHONE_BUSY");
-        if (loginPage(body) || head.find("200") == string::npos) return authFailure("AUTH_REJECTED");
-        if (!sessionCookie.empty()) cookie_ = sessionCookie;
-        if (!request("GET", "/record.htm", "", head, body, idleOnly) || !protectedPage(head, body)) return idleOnly && requestDeferred_ ? false : authFailure("AUTH_VERIFY_FAILED");
-        rememberRecordState(body);
-        saveCookie();
-        return authSuccess("AUTH_VERIFIED");
+        // One whole challenge. Returns null on success, otherwise the failure code the retry loop may recover from.
+        const auto tryLogin = [&](bool allowCache) -> const char* {
+            string head, body;
+            if (!request("GET", "/", "", head, body, idleOnly)) return "PHONE_UNREACHABLE";
+            if (head.find("503") != string::npos) return "PHONE_BUSY";
+            string sessionCookie = headerValue(head, "Set-Cookie");
+            const size_t auth = sessionCookie.find("auth=");
+            if (auth == string::npos) sessionCookie.clear();
+            else { sessionCookie = sessionCookie.substr(auth + 5); sessionCookie = sessionCookie.substr(0, sessionCookie.find(';')); }
+            if (!sessionCookie.empty()) cookie_ = sessionCookie;
+            if (!request("GET", "/key==nonce?now=" + std::to_string(GetTickCount64()), "", head, body, idleOnly)) return "AUTH_NONCE_FAILED";
+            if (head.find("503") != string::npos) return "PHONE_BUSY";
+            if (loginPage(body)) return "AUTH_NONCE_FAILED";
+            const string nonceBody = trim(body);
+            string nonce;
+            const size_t newline = nonceBody.find_first_of("\r\n");
+            for (char value : nonceBody.substr(0, newline)) if (isxdigit(static_cast<unsigned char>(value))) nonce += value;
+            if (nonce.size() > 128) return "AUTH_NONCE_FAILED";
+            LOGI("AUTH_CHALLENGE session_cookie_present=%d nonce_length=%zu", !sessionCookie.empty(), nonce.size());
+            if (nonce.size() < 8) {
+                // A successful request must enter the cache-validation branch. The previous
+                // implementation tested !request(), then cleared an otherwise valid cookie.
+                if (allowCache && !cookie_.empty() && request("GET", "/record.htm", "", head, body, idleOnly) && protectedPage(head, body)) {
+                    rememberRecordState(body); saveCookie(); authSuccess("AUTH_CACHE_VALID"); return nullptr;
+                }
+                return "AUTH_SESSION_INVALID";
+            }
+            cookie_ = nonce;
+            const string digest = Md5::hex(g_cfg.phoneUser + ":" + g_cfg.phonePass + ":" + nonce);
+            const string form = "encoded=" + urlEncode(g_cfg.phoneUser + ":" + digest) + "&CurLanguage=cn&ReturnPage=/";
+            if (!request("POST", "/", form, head, body, idleOnly)) return "AUTH_POST_FAILED";
+            if (head.find("503") != string::npos) return "PHONE_BUSY";
+            if (loginPage(body) || head.find("200") == string::npos) return "AUTH_REJECTED";
+            if (!sessionCookie.empty()) cookie_ = sessionCookie;
+            if (!request("GET", "/record.htm", "", head, body, idleOnly) || !protectedPage(head, body)) return "AUTH_VERIFY_FAILED";
+            rememberRecordState(body);
+            saveCookie();
+            authSuccess("AUTH_VERIFIED");
+            return nullptr;
+        };
+
+        const char* failure = nullptr;
+        for (int attempt = 1; attempt <= 3; ++attempt) {
+            failure = tryLogin(attempt == 1);
+            if (!failure) { if (attempt > 1) LOGI("AUTH_RECOVERED attempt=%d", attempt); return true; }
+            // Yielding to an incoming call is not an authentication failure.
+            if (idleOnly && requestDeferred_) return false;
+            const bool retryable = !strcmp(failure, "AUTH_NONCE_FAILED") || !strcmp(failure, "AUTH_SESSION_INVALID") ||
+                                   !strcmp(failure, "AUTH_REJECTED") || !strcmp(failure, "AUTH_VERIFY_FAILED");
+            if (!retryable || attempt == 3) break;
+            // Another phone page may hold the device's single session: drop the cache and start a fresh challenge.
+            if (idleOnly) LOGI("AUTH_RETRY code=%s attempt=%d backoff_ms=%d", failure, attempt, 300 * attempt);
+            else LOGW("AUTH_RETRY code=%s attempt=%d backoff_ms=%d", failure, attempt, 300 * attempt);
+            cookie_.clear();
+            Sleep(300 * attempt);
+        }
+        return authFailure(failure ? failure : "AUTH_SESSION_INVALID", idleOnly);
     }
 
     /// Send a single Start action and wait only for local RTP evidence, never extra HTTP polling.
@@ -216,12 +245,18 @@ public:
 
 private:
     /// Mark authentication failure without revealing credentials or invalidating a good cache.
-    bool authFailure(const char* code) {
+    bool authFailure(const char* code, bool background = false) {
         readyObserved_ = 0;
         diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; });
         diagnosticHealth(true, false, code);
         diagnosticStage(RecordingStage::Failed, code);
-        LOGE("%s", code); return false;
+        if (background) {
+            // The health timer retries every minute; one line per five minutes keeps the event list readable.
+            static ULONGLONG lastBackgroundFailure = 0;
+            const ULONGLONG now = GetTickCount64();
+            if (now - lastBackgroundFailure > 300000) { lastBackgroundFailure = now; LOGW("%s background=true", code); }
+        } else LOGE("%s", code);
+        return false;
     }
 
     /// Mark protected-page authentication success independently of listener readiness.
@@ -291,23 +326,29 @@ private:
         return false;
     }
 
-    /// Read a credential cache, accepting the established plaintext format for migration.
+    /// Identify the device a cached session belongs to; a DHCP address change or another phone must not reuse it.
+    static string cookieScope() { return g_cfg.phoneMac + "|" + phoneAddress() + ":" + std::to_string(g_cfg.phonePort); }
+
+    /// Read the session cache, accepting the older unscoped format for migration.
     void loadCookie() {
-        if (g_cfg.phoneAddressMode != "fixed") return;
         std::ifstream input(".phone_cookie", std::ios::binary);
         char buffer[8193]; input.read(buffer, sizeof(buffer));
         const size_t length = static_cast<size_t>(input.gcount());
         if (length > 8192) { LOGW("COOKIE_CACHE_TOO_LARGE"); return; }
         const string value(buffer, length);
         string plain;
-        if (unprotectLocalSecret(trim(value), plain) && plain.size() >= 8 && plain.size() <= 128) cookie_ = plain;
+        if (!unprotectLocalSecret(trim(value), plain)) return;
+        const size_t split = plain.find('\n');
+        const string scope = split == string::npos ? "" : plain.substr(0, split);
+        const string cookie = split == string::npos ? plain : plain.substr(split + 1);
+        if (!scope.empty() && scope != cookieScope()) { LOGI("COOKIE_CACHE_SCOPE_CHANGED"); return; }
+        if (cookie.size() >= 8 && cookie.size() <= 128) cookie_ = cookie;
     }
 
-    /// Persist a validated cookie using account-bound Windows encryption.
+    /// Persist a validated cookie using account-bound Windows encryption, tagged with its device scope.
     void saveCookie() {
-        if (g_cfg.phoneAddressMode != "fixed") return;
         string encoded;
-        if (!protectLocalSecret(cookie_, encoded)) { LOGW("COOKIE_SAVE_FAILED encrypt=true"); return; }
+        if (!protectLocalSecret(cookieScope() + "\n" + cookie_, encoded)) { LOGW("COOKIE_SAVE_FAILED encrypt=true"); return; }
         std::ofstream output(".phone_cookie", std::ios::binary | std::ios::trunc);
         output << encoded;
         if (!output) LOGW("COOKIE_SAVE_FAILED storage=true");

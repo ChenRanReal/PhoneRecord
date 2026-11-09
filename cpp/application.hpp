@@ -201,7 +201,8 @@ private:
                 const auto state = diagnosticSnapshot();
                 if (state.callActive || g_sessionCount > 0) LOGI("PHONE_CHECK_DEFERRED call_active=true");
                 else if (!g_offline) {
-                    if (!state.authenticated && operation == "phone") g_phone.login();
+                    // Health polling also re-authenticates, so an intermittent phone session recovers without a manual check.
+                    if (!state.authenticated) g_phone.login(operation == "health");
                     if (diagnosticSnapshot().authenticated) g_phone.check();
                     else if (operation == "health") diagnosticHealth(true, false, "AUTH_REQUIRED");
                 }
