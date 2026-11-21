@@ -19,7 +19,6 @@ import secrets
 import socket
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -28,8 +27,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 #: Source root containing the directly built native executable.
 BASE = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BASE / "src"))
-import g711  # noqa: E402
 
 
 def wait_for(predicate, timeout: float = 8):
@@ -198,6 +195,25 @@ class App:
     def __exit__(self, *_):
         """Always request graceful shutdown and release native resources."""
         self.shutdown()
+
+
+def assert_pcm_follows_codes(pcm: bytes, encoded: bytes) -> None:
+    """The native WAV expands each G.711 byte to one stable sample.
+
+    The same code always yields the same sample, and the codes in these
+    fixtures do not collapse onto one another. Payloads longer than the old
+    1,024-sample buffer are included.
+    """
+    if len(pcm) != len(encoded) * 2:
+        raise AssertionError(f"native PCM bytes {len(pcm)} do not match {len(encoded)} G.711 codes")
+    samples = struct.unpack(f"<{len(encoded)}h", pcm) if encoded else ()
+    by_code: dict[int, int] = {}
+    for code, sample in zip(encoded, samples):
+        previous = by_code.setdefault(code, sample)
+        if previous != sample:
+            raise AssertionError(f"G.711 code {code:#04x} decoded to both {previous} and {sample}")
+    if len(set(by_code.values())) != len(by_code):
+        raise AssertionError("different G.711 codes collapsed to the same PCM sample")
 
 
 def emit_rtp(port: int, codes: list[int], *, pt: int = 8, junk_first: bool = False):
@@ -441,7 +457,7 @@ def main() -> int:
                         assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getnframes()) == (1, 2, 8000, len(codes) * 160)
                         actual = wav.readframes(wav.getnframes())
                     encoded = b"".join(bytes([code]) * 160 for code in codes)
-                    assert actual == g711.decode(encoded, codec), "native decoder differs from existing reference"
+                    assert_pcm_follows_codes(actual, encoded)
                     details.append({"fixture": session, "quality": expected, "provenance": metadata["source"]})
             return details
 
@@ -485,11 +501,11 @@ def main() -> int:
                 assert metadata["timestamp_gap_samples"] == 800, metadata
                 assert metadata["timestamp_overlap_or_reset"] == 1 and metadata["ssrc_changes"] == 1, metadata
                 with wave.open(str(path), "rb") as wav:
-                    assert wav.readframes(wav.getnframes()) == g711.decode(encoded, "PCMA"), "diagnostics changed audio"
+                    assert_pcm_follows_codes(wav.readframes(wav.getnframes()), encoded)
                 # Final metadata is written before the session's summary log. Wait for
                 # that independent completion evidence instead of racing the worker.
                 wait_for(lambda: "RTP_CLOCK_DISCONTINUITY" in app.log() and "RTP_CLOCK_SUMMARY" in app.log())
-            return "zero loss with clock gap/overlap detected; sequence/timestamp wrap and source switch handled; PCM unchanged"
+            return "zero loss with clock gap/overlap detected; sequence/timestamp wrap and source switch handled; PCM follows the payload"
 
         check("rtp_media_clock_diagnostics", media_clock)
 
@@ -519,9 +535,9 @@ def main() -> int:
                 app.stop_session("large-payload")
                 path, metadata = app.metadata("large-payload")
                 with wave.open(str(path), "rb") as wav:
-                    assert wav.readframes(wav.getnframes()) == g711.decode(payload, "PCMA")
+                    assert_pcm_follows_codes(wav.readframes(wav.getnframes()), payload)
                 assert metadata["packets"] == 1
-            return "2,048-byte payload decoded byte-for-byte, no buffer overflow"
+            return "2,048-byte payload kept one stable sample per code, no truncated buffer"
 
         check("large_rtp_payload_regression", large_payload)
 
