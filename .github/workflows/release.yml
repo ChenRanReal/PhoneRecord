@@ -93,6 +93,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
+          $qwenSkip = @()
           $assets = @(
             'cpp/PhoneRecord.exe','cpp/PhoneRecord.exe.sha256','cpp/update-manifest.txt','cpp/update-manifest.sig',
             'tmp/release-x64/PhoneRecord-x64.exe','tmp/release-x64/PhoneRecord-x64.exe.sha256','tmp/release-x64/update-manifest-x64.txt','tmp/release-x64/update-manifest-x64.sig'
@@ -111,16 +112,21 @@ jobs:
               $assets += $path
             }
           } else {
-            $skipped = Get-ChildItem -LiteralPath 'tmp/offline' -Filter '*.skipped.txt' -ErrorAction SilentlyContinue
-            if (-not $skipped) { throw 'Qwen 0.6B package is neither an uploadable zip nor an explicit skip.' }
-            Write-Output ($skipped | ForEach-Object { $_.Name + ': ' + [IO.File]::ReadAllText($_.FullName) })
+            $skipped = @(Get-ChildItem -LiteralPath 'tmp/offline' -Filter '*.skipped.txt' -ErrorAction SilentlyContinue)
+            if ($skipped.Count -eq 0) { throw 'Qwen 0.6B package is neither an uploadable zip nor an explicit skip.' }
+            foreach ($file in $skipped) {
+              Write-Output ($file.Name + ': ' + [IO.File]::ReadAllText($file.FullName))
+              $assets += $file.FullName
+              $qwenSkip += $file.Name
+            }
           }
-          gh release create $tag --verify-tag --draft --generate-notes --title "PhoneRecord $tag" @assets
+          if (-not (Test-Path -LiteralPath 'docs/release-notes.md')) { throw 'Missing docs/release-notes.md.' }
+          gh release create $tag --verify-tag --draft --notes-file docs/release-notes.md --title "PhoneRecord $tag" @assets
           if ($LASTEXITCODE -ne 0) { throw 'Release creation/upload failed. No existing release will be overwritten.' }
           $release = gh release view $tag --json assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Cannot verify uploaded assets.' }
           $expected = @('PhoneRecord.exe','PhoneRecord.exe.sha256','update-manifest.txt','update-manifest.sig','PhoneRecord-x64.exe','PhoneRecord-x64.exe.sha256','update-manifest-x64.txt','update-manifest-x64.sig') + $requiredOffline
-          if (Test-Path -LiteralPath $qwenZip) { $expected += @('PhoneRecord-x64-offline-qwen06.zip','update-manifest-x64-offline-qwen06.txt','update-manifest-x64-offline-qwen06.sig') }
+          if (Test-Path -LiteralPath $qwenZip) { $expected += @('PhoneRecord-x64-offline-qwen06.zip','update-manifest-x64-offline-qwen06.txt','update-manifest-x64-offline-qwen06.sig') } else { $expected += $qwenSkip }
           foreach ($name in $expected) {
             if (-not ($release.assets | Where-Object name -eq $name)) { throw "Missing release asset: $name" }
           }
