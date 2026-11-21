@@ -14,7 +14,7 @@ concurrency:
 jobs:
   release:
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 90
     permissions:
       contents: write
     steps:
@@ -72,17 +72,56 @@ jobs:
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: ./tools/New-UpdateManifest.ps1 -Version $env:GITHUB_REF_NAME.Substring(1) -Architecture x64 -Executable tmp/release-x64/PhoneRecord-x64.exe
+      - name: Cache offline model downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/phonerecord-model-cache
+          key: phonerecord-models-${{ hashFiles('cpp/offline_rules.hpp', 'cpp/speech/qwen-assets.json', 'cpp/speech/install.ps1', 'cpp/speech/qwen-install.ps1') }}
+      - name: Package offline installers
+        shell: pwsh
+        run: |
+          ./tools/New-OfflinePackage.ps1 -Variant sensevoice -Executable tmp/release-x64/PhoneRecord-x64.exe -OutputDirectory tmp/offline -CacheDirectory "$env:RUNNER_TEMP\phonerecord-model-cache" -Publish
+          ./tools/New-OfflinePackage.ps1 -Variant qwen06 -Executable tmp/release-x64/PhoneRecord-x64.exe -OutputDirectory tmp/offline -CacheDirectory "$env:RUNNER_TEMP\phonerecord-model-cache" -Publish
+      - name: Sign offline model-pack manifests
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: ./tools/New-ModelPackManifest.ps1 -Version $env:GITHUB_REF_NAME.Substring(1) -OutputDirectory tmp/offline
       - name: Create draft, upload all assets, then publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          gh release create $tag --verify-tag --draft --generate-notes --title "PhoneRecord $tag" cpp/PhoneRecord.exe cpp/PhoneRecord.exe.sha256 cpp/update-manifest.txt cpp/update-manifest.sig tmp/release-x64/PhoneRecord-x64.exe tmp/release-x64/PhoneRecord-x64.exe.sha256 tmp/release-x64/update-manifest-x64.txt tmp/release-x64/update-manifest-x64.sig
+          $assets = @(
+            'cpp/PhoneRecord.exe','cpp/PhoneRecord.exe.sha256','cpp/update-manifest.txt','cpp/update-manifest.sig',
+            'tmp/release-x64/PhoneRecord-x64.exe','tmp/release-x64/PhoneRecord-x64.exe.sha256','tmp/release-x64/update-manifest-x64.txt','tmp/release-x64/update-manifest-x64.sig'
+          )
+          $requiredOffline = @('PhoneRecord-x64-offline-sensevoice.zip','update-manifest-x64-offline-sensevoice.txt','update-manifest-x64-offline-sensevoice.sig')
+          foreach ($name in $requiredOffline) {
+            $path = Join-Path 'tmp/offline' $name
+            if (-not (Test-Path -LiteralPath $path)) { throw "Missing offline asset: $name" }
+            $assets += $path
+          }
+          $qwenZip = 'tmp/offline/PhoneRecord-x64-offline-qwen06.zip'
+          if (Test-Path -LiteralPath $qwenZip) {
+            foreach ($name in @('PhoneRecord-x64-offline-qwen06.zip','update-manifest-x64-offline-qwen06.txt','update-manifest-x64-offline-qwen06.sig')) {
+              $path = Join-Path 'tmp/offline' $name
+              if (-not (Test-Path -LiteralPath $path)) { throw "Qwen 0.6B zip is missing its signed manifest: $name" }
+              $assets += $path
+            }
+          } else {
+            $skipped = Get-ChildItem -LiteralPath 'tmp/offline' -Filter '*.skipped.txt' -ErrorAction SilentlyContinue
+            if (-not $skipped) { throw 'Qwen 0.6B package is neither an uploadable zip nor an explicit skip.' }
+            Write-Output ($skipped | ForEach-Object { $_.Name + ': ' + [IO.File]::ReadAllText($_.FullName) })
+          }
+          gh release create $tag --verify-tag --draft --generate-notes --title "PhoneRecord $tag" @assets
           if ($LASTEXITCODE -ne 0) { throw 'Release creation/upload failed. No existing release will be overwritten.' }
           $release = gh release view $tag --json assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Cannot verify uploaded assets.' }
-          foreach ($name in @('PhoneRecord.exe','PhoneRecord.exe.sha256','update-manifest.txt','update-manifest.sig','PhoneRecord-x64.exe','PhoneRecord-x64.exe.sha256','update-manifest-x64.txt','update-manifest-x64.sig')) {
+          $expected = @('PhoneRecord.exe','PhoneRecord.exe.sha256','update-manifest.txt','update-manifest.sig','PhoneRecord-x64.exe','PhoneRecord-x64.exe.sha256','update-manifest-x64.txt','update-manifest-x64.sig') + $requiredOffline
+          if (Test-Path -LiteralPath $qwenZip) { $expected += @('PhoneRecord-x64-offline-qwen06.zip','update-manifest-x64-offline-qwen06.txt','update-manifest-x64-offline-qwen06.sig') }
+          foreach ($name in $expected) {
             if (-not ($release.assets | Where-Object name -eq $name)) { throw "Missing release asset: $name" }
           }
           $existing = gh release list --limit 100 --json tagName,isDraft,isPrerelease | ConvertFrom-Json

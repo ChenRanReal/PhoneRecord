@@ -32,14 +32,18 @@ SenseVoiceSmall model weights have their own terms, independent of the MIT
 code license. Source: FunAudioLLM / FunASR, ONNX conversion by csukuangfj.
 See https://huggingface.co/FunAudioLLM/SenseVoiceSmall and
 https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE .
-The model bytes are not bundled into the PhoneRecord executable.
+The model bytes are not committed to Git and are not embedded in the executable.
+An offline zip may place them in bundled-speech next to the executable; that package
+must keep the license files under bundled-speech/licenses.
 
 
 ## Optional Qwen3-ASR CPU runtime
 
 Qwen/Qwen3-ASR-0.6B-hf, revision 7f1569a48a89f3e3f4dc3a5c9d28bddd903bc76c,
 is published under Apache-2.0: https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf .
-Weights are downloaded only by explicit user action and are not bundled.
+Weights are downloaded only by explicit user action unless an offline package
+already placed a hash-verified copy in bundled-speech. They are not embedded
+in the executable.
 Python 3.12.10 (PSF license), Transformers 5.13.0 (Apache-2.0),
 PyTorch 2.9.1 CPU (BSD-style), NumPy (BSD) and SoundFile (BSD) are installed
 as separate, pinned upstream packages. Their distributions retain upstream

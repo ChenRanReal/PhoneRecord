@@ -273,6 +273,8 @@ int wmain(int count, wchar_t** args) {
             require(CopyFileW(ownPath, target.c_str(), TRUE) && CopyFileW(ownPath, (stage + L"\\PhoneRecord.exe").c_str(), TRUE), "owned installer copies");
             require(updateWrite(stage + L"\\update-manifest.txt", installManifest) && updateWrite(stage + L"\\update-manifest.sig", key.sign(installManifest)), "signed installer fixture");
             require(updateWrite(configPath, "synthetic settings\n") && updateWrite(directory + L"\\recording-sentinel.txt", "preserve\n"), "preservation sentinels");
+            require(CreateDirectoryW((directory + L"\\bundled-speech").c_str(), NULL) && updateWrite(directory + L"\\bundled-speech\\model-sentinel.txt", "keep-model\n"), "bundled model sentinel");
+            require(updateWrite(directory + L"\\install-variant.txt", "PhoneRecord-variant-v1\nvariant=offline-sensevoice\n"), "variant sentinel");
             if (failStartup) require(updateWrite(configPath + L".fail-startup", "fail\n"), "failed startup fixture");
             wstring command = updateArgument(target) + L" --test-install-parent " + updateArgument(directory);
             STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION process{};
@@ -285,6 +287,8 @@ int wmain(int count, wchar_t** args) {
             require(GetFileAttributesW((target + L".update-backup").c_str()) == INVALID_FILE_ATTRIBUTES, "backup consumed only after confirmed startup/restore");
             string preserved; require(updateRead(configPath, preserved) && preserved == "synthetic settings\n", "configuration preserved");
             require(updateRead(directory + L"\\recording-sentinel.txt", preserved) && preserved == "preserve\n", "unrelated data preserved");
+            require(updateRead(directory + L"\\bundled-speech\\model-sentinel.txt", preserved) && preserved == "keep-model\n", "bundled models preserved across executable replacement");
+            require(updateRead(directory + L"\\install-variant.txt", preserved) && preserved.find("offline-sensevoice") != string::npos, "offline variant preserved");
             Sleep(200);
         }
         {
@@ -313,6 +317,21 @@ int wmain(int count, wchar_t** args) {
         SetEnvironmentVariableW(L"PHONERECORD_UPDATE_TEST_PUBLIC_KEY", NULL);
         if (count == 2) { UpdateTrayFixture::run(folder, manifest, signature); AddressAlertFixture::run(folder); }
         for (const wchar_t* suffix : {L".updates", L".update-cache"}) DeleteFileW((config + suffix).c_str());
+        require(updateParseVariant(updateVariantText(UpdateVariant::OfflineSenseVoice)) == UpdateVariant::OfflineSenseVoice, "sensevoice variant");
+        require(updateParseVariant("") == UpdateVariant::Standard, "missing variant is standard");
+        const ModelPackAssets healthyPack = updateDecideModelPack(UpdateVariant::OfflineSenseVoice, true);
+        require(!healthyPack.download && string(healthyPack.zip) == "PhoneRecord-x64-offline-sensevoice.zip", "healthy offline bundle does not download a model pack");
+        const ModelPackAssets repairPack = updateDecideModelPack(UpdateVariant::OfflineQwen06, false);
+        require(repairPack.download && string(repairPack.manifest) == "update-manifest-x64-offline-qwen06.txt", "unhealthy qwen06 install selects its pack");
+        const ModelPackAssets standardPack = updateDecideModelPack(UpdateVariant::Standard, false);
+        require(!standardPack.download && standardPack.zip[0] == '\0', "standard channel keeps the executable assets");
+        require(!updateMayRemoveStagedFile("bundled-speech") && !updateMayRemoveStagedFile("install-variant.txt"), "cleanup does not name bundled models");
+        require(updateMayRemoveStagedFile("PhoneRecord.exe") && updateMayRemoveStagedFile("model-pack.zip"), "staging names stay removable");
+        const string pack = "PhoneRecord-modelpack-v1\nversion=9.0.0\narch=x64\nvariant=offline-sensevoice\nfile=PhoneRecord-x64-offline-sensevoice.zip\nsize=3\nsha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nfingerprint=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
+        ModelPackManifest packManifest;
+        require(packManifest.parse(pack) && updateSignature(pack, key.sign(pack)), "model pack uses the executable trust root");
+        require(!packManifest.parse(manifest) && !UpdateManifest{}.parse(pack), "executable and model-pack manifests do not cross-parse");
+        require(!offlinePackagePublishable("qwen17", 1024) && offlinePackagePublishable("sensevoice", 1024), "1.7B weights are not a release asset");
         puts("UPDATE_NATIVE_OK: versions, signatures, hashes, scheduling, resume, disabled/manual/offline, cache, rate limit, tampering, admission, real replacement and startup rollback");
         require(updateWrite(folder + L"\\native-success.txt", "UPDATE_NATIVE_OK\n"), "success evidence");
         return 0;

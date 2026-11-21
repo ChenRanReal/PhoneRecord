@@ -2,6 +2,8 @@
 
 #include "update_protocol.hpp"
 
+#include <filesystem>
+
 /// Quote a Windows argv element without interpreting shell metacharacters.
 static wstring updateArgument(const wstring& value) {
     wstring result = L"\""; size_t slashes = 0;
@@ -186,6 +188,89 @@ static bool updateBeginInstall(const UpdateState& state, const wstring& config, 
     return true;
 }
 
+/// Delete only a temp directory this updater created for a model-pack swap.
+static void updateRemoveOwnedTemp(const wstring& directory) {
+    const size_t slash = directory.find_last_of(L"\\/");
+    const wstring name = slash == wstring::npos ? directory : directory.substr(slash + 1);
+    if (name != L"bundled-speech.incoming" && name != L"bundled-speech.previous") return;
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+}
+
+/// Find bundled-speech/bundle.txt within a shallow extract. Reparse points are ignored.
+static wstring updateFindBundledSpeech(const wstring& directory, int depth) {
+    if (depth < 0 || directory.empty()) return L"";
+    const size_t slash = directory.find_last_of(L"\\/");
+    const wstring name = slash == wstring::npos ? directory : directory.substr(slash + 1);
+    if (name == L"bundled-speech" && GetFileAttributesW((directory + L"\\bundle.txt").c_str()) != INVALID_FILE_ATTRIBUTES) return directory;
+    WIN32_FIND_DATAW data{};
+    HANDLE found = FindFirstFileW((directory + L"\\*").c_str(), &data);
+    if (found == INVALID_HANDLE_VALUE) return L"";
+    wstring result;
+    do {
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            result = updateFindBundledSpeech(directory + L"\\" + data.cFileName, depth - 1);
+            if (!result.empty()) break;
+        }
+    } while (FindNextFileW(found, &data));
+    FindClose(found);
+    return result;
+}
+
+/// Extract a verified model pack with tar. A failure leaves the existing bundle in place.
+static bool updateExtractZip(const wstring& zip, const wstring& destination) {
+    wchar_t system[MAX_PATH]{};
+    if (!GetSystemDirectoryW(system, MAX_PATH)) return false;
+    const wstring tar = wstring(system) + L"\\tar.exe";
+    if (GetFileAttributesW(tar.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+    if (!CreateDirectoryW(destination.c_str(), NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION process{};
+    wstring command = updateArgument(tar) + L" -xf " + updateArgument(zip) + L" -C " + updateArgument(destination);
+    if (!CreateProcessW(tar.c_str(), &command[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startup, &process)) return false;
+    const DWORD wait = WaitForSingleObject(process.hProcess, 600000);
+    DWORD code = 1;
+    if (wait == WAIT_OBJECT_0) GetExitCodeProcess(process.hProcess, &code);
+    else { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    return wait == WAIT_OBJECT_0 && code == 0;
+}
+
+/// Replace bundled-speech only after the zip's signature and digest match. The executable is not taken from the zip.
+static void updateApplyModelPack(const wstring& stageDir, const wstring& targetExe) {
+    const wstring zip = stageDir + L"\\model-pack.zip";
+    if (GetFileAttributesW(zip.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    string manifest, signature;
+    ModelPackManifest pack;
+    if (!updateRead(stageDir + L"\\model-pack-manifest.txt", manifest, 4096) || !updateRead(stageDir + L"\\model-pack-manifest.sig", signature, 8192) ||
+        !updateSignature(manifest, signature) || !pack.parse(manifest) || !updateHashFile(zip, pack.size, pack.sha256)) return;
+    const size_t slash = targetExe.find_last_of(L"\\/");
+    if (slash == wstring::npos) return;
+    const wstring installDir = targetExe.substr(0, slash);
+    const wstring incoming = installDir + L"\\bundled-speech.incoming";
+    const wstring previous = installDir + L"\\bundled-speech.previous";
+    const wstring dest = installDir + L"\\bundled-speech";
+    if (GetFileAttributesW(previous.c_str()) != INVALID_FILE_ATTRIBUTES || GetFileAttributesW(incoming.c_str()) != INVALID_FILE_ATTRIBUTES) return;
+    if (!updateExtractZip(zip, incoming)) { updateRemoveOwnedTemp(incoming); return; }
+    const wstring extracted = updateFindBundledSpeech(incoming, 3);
+    if (extracted.empty()) { updateRemoveOwnedTemp(incoming); return; }
+    string variant;
+    const wstring variantSource = extracted.substr(0, extracted.find_last_of(L"\\/")) + L"\\install-variant.txt";
+    updateRead(variantSource, variant, 4096);
+    const bool hadDest = GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (hadDest && !MoveFileExW(dest.c_str(), previous.c_str(), MOVEFILE_WRITE_THROUGH)) { updateRemoveOwnedTemp(incoming); return; }
+    if (!MoveFileExW(extracted.c_str(), dest.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        if (hadDest) MoveFileExW(previous.c_str(), dest.c_str(), MOVEFILE_WRITE_THROUGH);
+        updateRemoveOwnedTemp(incoming);
+        return;
+    }
+    if (!variant.empty()) updateWrite(installDir + L"\\install-variant.txt", variant);
+    updateRemoveOwnedTemp(previous);
+    updateRemoveOwnedTemp(incoming);
+}
+
 /// Replace only the program, confirm native startup through an inherited event, and restore on failure.
 static int updateApply(int count, LPWSTR* args) {
     if (count != 8) return 20;
@@ -237,12 +322,15 @@ static int updateApply(int count, LPWSTR* args) {
         CloseHandle(ack); return ready;
     };
     if (installed && restart(true)) {
+        updateApplyModelPack(directory, target);
         if (!DeleteFileW(backup.c_str()) && GetFileAttributesW(backup.c_str()) != INVALID_FILE_ATTRIBUTES) {
             const wstring kept = backup + L".kept";
             if (GetFileAttributesW(kept.c_str()) == INVALID_FILE_ATTRIBUTES) MoveFileExW(backup.c_str(), kept.c_str(), MOVEFILE_WRITE_THROUGH);
         }
         updateWrite(resultPath, "update.installed\n");
         DeleteFileW(staged.c_str()); DeleteFileW((directory + L"\\update-manifest.txt").c_str()); DeleteFileW((directory + L"\\update-manifest.sig").c_str());
+        DeleteFileW((directory + L"\\model-pack.zip").c_str()); DeleteFileW((directory + L"\\model-pack.zip.part").c_str());
+        DeleteFileW((directory + L"\\model-pack-manifest.txt").c_str()); DeleteFileW((directory + L"\\model-pack-manifest.sig").c_str());
         updateWrite(config + L".update-cleanup", wideToUtf8(directory));
         return 0;
     }

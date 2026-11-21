@@ -3,6 +3,8 @@
 #ifdef _WIN64
 #include <filesystem>
 #include <atomic>
+#include "offline_rules.hpp"
+#include "bundled_speech_win.hpp"
 
 /// Shared switch for the input-method focus hold: true (default) pauses feeding file audio while
 /// another program is in front, because the input method types recognized text into whatever input
@@ -77,6 +79,9 @@ public:
         root_ = wstring(local) + L"\\PhoneRecord\\speech-v1";
 #ifdef PHONERECORD_SPEECH_TESTING
         root_ = config + L".speech-test-runtime";
+        if (!bundleVerified_) locateBundle();
+#else
+        locateBundle();
 #endif
         const string saved = read(config_, 4096);
         language_ = jsonField(saved, "language"); if (!validLanguage(language_)) language_ = "auto";
@@ -241,6 +246,15 @@ public:
         if ((installModel_ == "qwen" || installModel_ == "qwen17") && !state_.historyEnabled) return;
         installSource_ = source.empty() ? source_ : source;
         if (installSource_ != "huggingface.co" && installSource_ != "hf-mirror.com") return;
+        if (speechForbidsDownload(bundleDirectoryPresent_, bundleVerified_, bundleClaim_, bundleAssessment_, bundleFacts_, installModel_.c_str())) {
+            if (bundleVerified_ && bundleAssessment_.supply(installModel_.c_str()) == SpeechSupply::Bundled) {
+                state_.installed = true; state_.step = "ready"; state_.failureCode.clear(); ++state_.revision; return;
+            }
+            if (bundleVerified_) {
+                state_.failureCode = state_.step = "integrity"; state_.percent = 0; state_.installed = false; ++state_.revision; return;
+            }
+            verifyPending_ = true; launchThread(); wake_.notify_all(); return;
+        }
         install_ = true; launchThread(); wake_.notify_all();
     }
     /// Admit a finalized file once, preserving stable language at admission and a bounded disk queue.
@@ -304,6 +318,25 @@ public:
             CloseHandle(completed); return true;
         } catch (...) { return false; }
     }
+#ifdef PHONERECORD_SPEECH_TESTING
+    /// Inject an assessed bundle so tests can distinguish bundled, blocked and download without hashing.
+    void testSetBundle(bool present, const SpeechBundleClaim& claim, const std::map<std::string, SpeechFileFact>& files) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bundleDirectoryPresent_ = present; bundleVerified_ = true; verifyPending_ = false; bundleClaim_ = claim; bundleFacts_ = files;
+        bundleAssessment_ = speechAssessBundle(present, claim, files);
+        bundleDirectory_ = present ? L"fixture-bundle" : L"";
+        state_.installed = installed(selectedModel_);
+    }
+    /// Report the assessed supply name. Absent directories stay on the download path.
+    string testOrigin(const string& model) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!bundleDirectoryPresent_) return "download";
+        if (!bundleVerified_) return "unverified";
+        return speechSupplyName(bundleAssessment_.supply(model.c_str()));
+    }
+    /// True after prepare has queued the network installer.
+    bool testInstallQueued() const { std::lock_guard<std::mutex> lock(mutex_); return install_; }
+#endif
 private:
     /// Recognize terminal codes so missing/partial progress can never masquerade as success or setup readiness.
     static bool isFailure(const string& code) {
@@ -340,8 +373,13 @@ private:
     }
     /// Persistent job identity; never carries a GUI object or live recording handle.
     struct Job { wstring wav; string language; string model = "sense"; bool live = false; };
-    /// Each model owns a separate verified readiness marker.
-    bool installed(const string& model) const { return GetFileAttributesW((root_ + (model == "qwen17" ? L"\\qwen\\installed-1.7b-v1" : model == "qwen" ? L"\\qwen\\installed-v1" : L"\\installed-v1")).c_str()) != INVALID_FILE_ATTRIBUTES; }
+    /// A verified bundle wins. Before the digest finishes, exact pin sizes count as present and block a download.
+    bool installed(const string& model) const {
+        if (bundleVerified_ && bundleAssessment_.supply(model.c_str()) == SpeechSupply::Bundled) return true;
+        if (!bundleVerified_ && speechBundleSized(model.c_str(), bundleDirectoryPresent_, bundleFacts_)) return true;
+        const wchar_t* marker = model == "qwen17" ? L"\\qwen\\installed-1.7b-v1" : model == "qwen" ? L"\\qwen\\installed-v1" : L"\\installed-v1";
+        return GetFileAttributesW((root_ + marker).c_str()) != INVALID_FILE_ATTRIBUTES;
+    }
     /// Save model selection together with the existing independent speech preferences.
     bool savePreferences() { return write(config_,preferences(state_.enabled,language_,source_,state_.liveEnabled)); }
     /// Serialize both modules together so editing either preserves the other's defaults.
@@ -356,8 +394,11 @@ private:
         for (wchar_t ch : value) { if (ch == L'\\') { ++slash; continue; } out.append(ch == L'"' ? slash * 2 + 1 : slash, L'\\'); slash = 0; out += ch; }
         out.append(slash * 2, L'\\'); return out + L'"';
     }
-    /// Start the coordinator once; caller holds its mutex.
-    void launchThread() { if (!thread_.joinable() && !stopping_) thread_ = std::thread(&SpeechService::loop, this); }
+    /// Start the coordinator once. A bundle is hashed on this thread before any download or inference.
+    void launchThread() {
+        if (bundleDirectoryPresent_ && !bundleVerified_) verifyPending_ = true;
+        if (!thread_.joinable() && !stopping_) thread_ = std::thread(&SpeechService::loop, this);
+    }
     /// Save waiting jobs plus the active job, so an interrupted process can be retried after restart.
     bool persistQueue(bool includeActive = true) {
         string bytes;
@@ -373,14 +414,15 @@ private:
         return bytes && write(root_ + L"\\" + name, string(bytes, SizeofResource(NULL, entry)));
     }
     /// Run one child in a kill-on-close Job Object; poll structured status and bound the operation.
-    bool process(const wstring& exe, const wstring& args, unsigned epoch, ULONGLONG timeout) {
+    /// An empty working directory uses the private speech root. Bundled inference passes the install directory.
+    bool process(const wstring& exe, const wstring& args, unsigned epoch, ULONGLONG timeout, const wstring& cwd = L"") {
         if (epoch_ != epoch) return false;
         STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION child{}; wstring command = quote(exe) + L" " + args;
         HANDLE job = CreateJobObjectW(NULL, NULL); if (!job) { processFailure("launch_failed","CreateJobObjectW failed",GetLastError()); return false; }
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
-            !CreateProcessW(exe.c_str(), &command[0], NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, root_.c_str(), &startup, &child)) { const DWORD error = GetLastError(); CloseHandle(job); processFailure("launch_failed","Creating the managed speech process failed",error); return false; }
+            !CreateProcessW(exe.c_str(), &command[0], NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, (cwd.empty() ? root_ : cwd).c_str(), &startup, &child)) { const DWORD error = GetLastError(); CloseHandle(job); processFailure("launch_failed","Creating the managed speech process failed",error); return false; }
         if (!AssignProcessToJobObject(job, child.hProcess)) { const DWORD error = GetLastError(); TerminateProcess(child.hProcess, 1); WaitForSingleObject(child.hProcess, INFINITE); CloseHandle(child.hThread); CloseHandle(child.hProcess); CloseHandle(job); processFailure("launch_failed","AssignProcessToJobObject failed",error); return false; }
         ResumeThread(child.hThread); CloseHandle(child.hThread);
         const auto started = GetTickCount64(); bool done = false;
@@ -404,11 +446,13 @@ private:
     /// Execute one operation at a time; installed resources are never implicitly repaired/downloaded.
     void loop() {
         for (;;) {
-            bool installing; Job task; string source, installModel; unsigned epoch;
+            bool installing = false; Job task; string source, installModel; unsigned epoch = 0; bool verifying = false;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait(lock, [&] { return stopping_ || (state_.enabled && (install_ || (livePending_ || std::any_of(queue_.begin(),queue_.end(),[&](const Job& j){return installed(j.model);})))); });
+                wake_.wait(lock, [&] { return stopping_ || (verifyPending_ && !bundleVerified_) || (state_.enabled && (install_ || (livePending_ || std::any_of(queue_.begin(),queue_.end(),[&](const Job& j){return installed(j.model);})))); });
                 if (stopping_) return;
+                if (verifyPending_ && !bundleVerified_) verifying = true;
+                else {
                 installing = install_; install_ = false; installingNow_ = installing; installModel = installModel_; source = installing ? installSource_ : source_; epoch = epoch_;
                 if (!installing) {
                     if (livePending_) { task = {state_.liveWav,liveLanguage_,"sense",true}; livePending_ = false; liveRan_ = true; DeleteFileW((root_ + L"\\live.stop").c_str()); if (!state_.recording) write(root_ + L"\\live.stop","closed"); }
@@ -421,7 +465,9 @@ private:
                 state_.resource.clear(); state_.origin.clear(); state_.operation.clear(); lastProgress_.clear();
                 state_.stepStarted = GetTickCount64();
                 state_.preparationStep = state_.step; state_.completedBytes.clear(); state_.totalBytes.clear(); ++state_.revision;
+                }
             }
+            if (verifying) { confirmBundle(); continue; }
             bool ok = false;
             HANDLE exclusive = CreateMutexW(NULL, FALSE, L"Local\\PhoneRecordSpeechRuntimeV1");
             const DWORD ownership = exclusive ? WaitForSingleObject(exclusive, 0) : WAIT_FAILED;
@@ -430,15 +476,19 @@ private:
                 if (!acquired) throw std::runtime_error("speech runtime is already in use");
                 std::filesystem::create_directories(root_);
                 DeleteFileW((root_ + L"\\progress.json").c_str());
-                if (resource(1902, L"worker.cjs") && resource(1903, L"NOTICE.md") && resource(1904,L"qwen-install.ps1") && resource(1905,L"qwen-worker.py") && resource(1906,L"qwen-assets.json")) {
+                const wstring runtime = modelRuntime(installing ? installModel : task.model);
+                // A verified bundle already contains the runtime. Do not delete its marker or start a download.
+                if (installing && runtime != root_) ok = true;
+                else if (resource(1902, L"worker.cjs") && resource(1903, L"NOTICE.md") && resource(1904,L"qwen-install.ps1") && resource(1905,L"qwen-worker.py") && resource(1906,L"qwen-assets.json")) {
                     if ((installing ? installModel : task.model) != "sense") {
                         resource(1901,L"install.ps1");
                         if (installing) {
                             wchar_t system[32768]{}; GetSystemDirectoryW(system,static_cast<UINT>(std::size(system)));
                             ok = process(wstring(system) + L"\\WindowsPowerShell\\v1.0\\powershell.exe",L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + quote(root_ + L"\\qwen-install.ps1") + L" -Root " + quote(root_) + L" -ProgressFile " + quote(root_ + L"\\progress.json") + L" -Source " + utf8ToWide(source) + L" -Variant " + (installModel == "qwen17" ? L"1.7B" : L"0.6B"),epoch,7200000);
                         } else if (safeRecording(task.wav)) {
-                            const string body = "{\"variant\":" + jsonQuoted(task.model == "qwen17" ? "1.7B" : "0.6B") + ",\"root\":" + jsonQuoted(wideToUtf8(root_ + L"\\qwen")) + ",\"wav\":" + jsonQuoted(wideToUtf8(task.wav)) + ",\"language\":" + jsonQuoted(task.language) + ",\"live\":" + string(task.live ? "true" : "false") + ",\"stopFile\":" + jsonQuoted(wideToUtf8(root_ + L"\\live.stop")) + ",\"progress\":" + jsonQuoted(wideToUtf8(root_ + L"\\progress.json")) + "}";
-                            if (write(root_ + L"\\job.json",body)) ok = process(root_ + L"\\qwen\\python\\python.exe",quote(root_ + L"\\qwen-worker.py") + L" " + quote(root_ + L"\\job.json"),epoch,12ULL*3600000);
+                            const wstring qwenRoot = runtime + L"\\qwen";
+                            const string body = "{\"variant\":" + jsonQuoted(task.model == "qwen17" ? "1.7B" : "0.6B") + ",\"root\":" + jsonQuoted(wideToUtf8(qwenRoot)) + ",\"wav\":" + jsonQuoted(wideToUtf8(task.wav)) + ",\"language\":" + jsonQuoted(task.language) + ",\"live\":" + string(task.live ? "true" : "false") + ",\"stopFile\":" + jsonQuoted(wideToUtf8(root_ + L"\\live.stop")) + ",\"progress\":" + jsonQuoted(wideToUtf8(root_ + L"\\progress.json")) + "}";
+                            if (write(root_ + L"\\job.json",body)) ok = process(qwenRoot + L"\\python\\python.exe",quote(root_ + L"\\qwen-worker.py") + L" " + quote(root_ + L"\\job.json"),epoch,12ULL*3600000,runtime);
                         }
                     } else
                     if (installing && resource(1901, L"install.ps1")) {
@@ -447,8 +497,8 @@ private:
                         const wstring exe = wstring(system) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
                         ok = process(exe, L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + quote(root_ + L"\\install.ps1") + L" -Root " + quote(root_) + L" -ProgressFile " + quote(root_ + L"\\progress.json") + L" -Source " + utf8ToWide(source), epoch, 3600000);
                     } else if (!installing && safeRecording(task.wav,task.live)) {
-                        const string body = "{\"root\":" + jsonQuoted(wideToUtf8(root_)) + ",\"wav\":" + jsonQuoted(wideToUtf8(task.wav)) + ",\"language\":" + jsonQuoted(task.language) + ",\"live\":" + string(task.live ? "true" : "false") + ",\"stopFile\":" + jsonQuoted(wideToUtf8(root_ + L"\\live.stop")) + ",\"progress\":" + jsonQuoted(wideToUtf8(root_ + L"\\progress.json")) + "}";
-                        if (write(root_ + L"\\job.json", body)) ok = process(root_ + L"\\node-v24.11.0-win-x64\\node.exe", quote(root_ + L"\\worker.cjs") + L" " + quote(root_ + L"\\job.json"), epoch, 12ULL * 3600000);
+                        const string body = "{\"root\":" + jsonQuoted(wideToUtf8(runtime)) + ",\"wav\":" + jsonQuoted(wideToUtf8(task.wav)) + ",\"language\":" + jsonQuoted(task.language) + ",\"live\":" + string(task.live ? "true" : "false") + ",\"stopFile\":" + jsonQuoted(wideToUtf8(root_ + L"\\live.stop")) + ",\"progress\":" + jsonQuoted(wideToUtf8(root_ + L"\\progress.json")) + "}";
+                        if (write(root_ + L"\\job.json", body)) ok = process(runtime + L"\\node-v24.11.0-win-x64\\node.exe", quote(root_ + L"\\worker.cjs") + L" " + quote(root_ + L"\\job.json"), epoch, 12ULL * 3600000, runtime);
                     }
                 }
             } catch (const std::filesystem::filesystem_error& error) { processFailure("permission","Cannot prepare the private speech directory",static_cast<DWORD>(error.code().value())); ok = false; }
@@ -477,6 +527,146 @@ private:
             }
         }
     }
+    /// Locate bundled-speech beside the executable. Tests use an explicit probe and never the host install.
+    void locateBundle() {
+#ifdef PHONERECORD_SPEECH_TESTING
+        if (bundleProbe_.empty()) { bundleDirectoryPresent_ = false; bundleDirectory_.clear(); return; }
+        const wstring directory = bundleProbe_;
+#else
+        wchar_t executable[32768]{};
+        const DWORD length = GetModuleFileNameW(NULL, executable, static_cast<DWORD>(std::size(executable)));
+        if (!length || length >= std::size(executable)) return;
+        const wstring image(executable, length);
+        const size_t slash = image.find_last_of(L"\\/");
+        if (slash == wstring::npos) return;
+        const wstring directory = image.substr(0, slash) + L"\\bundled-speech";
+#endif
+        const DWORD flags = GetFileAttributesW(directory.c_str());
+        bundleDirectoryPresent_ = flags != INVALID_FILE_ATTRIBUTES && (flags & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if (!bundleDirectoryPresent_) { bundleDirectory_.clear(); bundleFacts_.clear(); return; }
+        bundleDirectory_ = directory;
+        speechParseBundleClaim(read(directory + L"\\bundle.txt", 4096), bundleClaim_);
+        bundleFacts_.clear();
+        speechStatBundle(directory, bundleFacts_);
+    }
+    /// Bundle directory when that model matched its pins; otherwise the private LocalAppData runtime.
+    wstring modelRuntime(const string& model) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (bundleVerified_ && bundleAssessment_.supply(model.c_str()) == SpeechSupply::Bundled && !bundleDirectory_.empty()) return bundleDirectory_;
+        return root_;
+    }
+    /// Stream SHA-256 of one local file. The result is lowercase hex.
+    static bool sha256File(const wstring& path, string& hex) {
+        hex.clear();
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        HCRYPTPROV provider = 0; HCRYPTHASH hash = 0; bool valid = false;
+        if (CryptAcquireContextW(&provider, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) && CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+            BYTE buffer[65536]; DWORD read = 0; bool good = true;
+            while (good) {
+                if (!ReadFile(file, buffer, sizeof(buffer), &read, NULL)) { good = false; break; }
+                if (!read) break;
+                if (!CryptHashData(hash, buffer, read, 0)) good = false;
+            }
+            BYTE digest[32]{}; DWORD length = sizeof(digest);
+            if (good && CryptGetHashParam(hash, HP_HASHVAL, digest, &length, 0) && length == sizeof(digest)) {
+                for (BYTE byte : digest) { char text[3]; snprintf(text, sizeof(text), "%02x", byte); hex += text; }
+                valid = hex.size() == 64;
+            }
+        }
+        if (hash) CryptDestroyHash(hash);
+        if (provider) CryptReleaseContext(provider, 0);
+        CloseHandle(file);
+        if (!valid) hex.clear();
+        return valid;
+    }
+    /// Read digest cache entries. A missing file just means the next check hashes the pins.
+    void loadHashCache(std::map<std::string, std::string>& cache) const {
+        cache.clear();
+        if (root_.empty()) return;
+        std::istringstream input(read(root_ + L"\\bundle-hash-cache.txt", 65536));
+        string line;
+        if (!std::getline(input, line) || line != "PhoneRecord-bundle-hash-v1") return;
+        while (std::getline(input, line)) {
+            const size_t split = line.rfind(' ');
+            if (split == string::npos || line.size() < split + 65) continue;
+            cache[line.substr(0, split)] = line.substr(split + 1);
+        }
+    }
+    /// Remember pin digests keyed by path, size and write time so later launches do not rehash multi-gigabyte weights.
+    void saveHashCache(const std::map<std::string, std::string>& cache) const {
+        if (root_.empty()) return;
+        try { std::filesystem::create_directories(root_); } catch (...) { return; }
+        string body = "PhoneRecord-bundle-hash-v1\n";
+        int kept = 0;
+        for (const auto& item : cache) {
+            if (item.second.size() != 64 || item.first.empty() || item.first.find(' ') != string::npos) continue;
+            body += item.first + " " + item.second + "\n";
+            if (++kept >= 64) break;
+        }
+        write(root_ + L"\\bundle-hash-cache.txt", body);
+    }
+    /// Hash pinned files outside the mutex, then publish bundled or blocked. A blocked model is not downloaded.
+    void confirmBundle() {
+        wstring directory; SpeechBundleClaim claim;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!bundleDirectoryPresent_ || bundleVerified_) { verifyPending_ = false; return; }
+            directory = bundleDirectory_;
+            claim = bundleClaim_;
+        }
+        std::map<std::string, SpeechFileFact> files;
+        try {
+            speechStatBundle(directory, files);
+            std::map<std::string, std::string> cache;
+            loadHashCache(cache);
+            bool dirty = false;
+            for (const SpeechPin& pin : kSpeechPins) {
+                auto found = files.find(pin.relative);
+                if (found == files.end() || !found->second.present || found->second.size != pin.size) continue;
+                const wstring path = directory + L"\\" + speechRelativeWide(pin.relative);
+                WIN32_FILE_ATTRIBUTE_DATA info{};
+                if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) continue;
+                const unsigned long long stamp = (static_cast<unsigned long long>(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
+                const string key = string(pin.relative) + "|" + std::to_string(pin.size) + "|" + std::to_string(stamp);
+                const auto cached = cache.find(key);
+                if (cached != cache.end() && speechDigestEquals(cached->second, pin.sha256)) { found->second.sha256 = cached->second; continue; }
+                string hex;
+                if (!sha256File(path, hex)) continue;
+                found->second.sha256 = hex;
+                cache[key] = hex;
+                dirty = true;
+            }
+            if (dirty) saveHashCache(cache);
+            const SpeechBundleAssessment assessment = speechAssessBundle(true, claim, files);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (bundleDirectory_ != directory) return;
+            bundleFacts_ = std::move(files);
+            bundleAssessment_ = assessment;
+            bundleVerified_ = true;
+            verifyPending_ = false;
+            state_.installed = installed(selectedModel_);
+            if (assessment.supply(selectedModel_.c_str()) == SpeechSupply::Blocked) {
+                state_.failureCode = state_.step = "integrity";
+                state_.percent = 0;
+                state_.installed = false;
+            }
+            ++state_.revision;
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            bundleVerified_ = true;
+            verifyPending_ = false;
+            if (claim.sense) bundleAssessment_.sense = SpeechSupply::Blocked;
+            if (claim.qwen) bundleAssessment_.qwen = SpeechSupply::Blocked;
+            if (claim.qwen17) bundleAssessment_.qwen17 = SpeechSupply::Blocked;
+            if (bundleAssessment_.supply(selectedModel_.c_str()) == SpeechSupply::Blocked) {
+                state_.failureCode = state_.step = "integrity";
+                state_.percent = 0;
+                state_.installed = false;
+            }
+            ++state_.revision;
+        }
+    }
     /// All mutable preferences, snapshots and queue records share one ownership mutex.
     mutable std::mutex mutex_;
     /// Wake only for explicit setup, file completion, preference changes or shutdown.
@@ -491,6 +681,18 @@ private:
     bool stopping_ = false, install_ = false, installingNow_ = false, livePending_ = false, liveRan_ = false, preempt_ = false, liveCancelled_ = false;
     /// Root, per-config preferences/queue, and currently owned WAV identity.
     wstring root_, config_, queueFile_, active_;
+    /// Install-directory speech tree. Empty when this copy has no bundled-speech folder.
+    wstring bundleDirectory_;
+    /// Presence is known at start. Verification finishes on the speech thread before use.
+    bool bundleDirectoryPresent_ = false, bundleVerified_ = false, verifyPending_ = false;
+    /// Claim, last assessment and size facts. Digests are filled by confirmBundle.
+    SpeechBundleClaim bundleClaim_;
+    SpeechBundleAssessment bundleAssessment_;
+    std::map<std::string, SpeechFileFact> bundleFacts_;
+#ifdef PHONERECORD_SPEECH_TESTING
+    /// Optional fixture directory. Production never reads this.
+    wstring bundleProbe_;
+#endif
     /// Language captured for the running file and defaults for future admission.
     string installModel_ = "sense", installSource_ = "huggingface.co", liveLanguage_ = "auto", liveSource_ = "huggingface.co";
     /// History defaults and active job identity.
