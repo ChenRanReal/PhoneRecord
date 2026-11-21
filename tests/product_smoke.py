@@ -29,15 +29,55 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE = pathlib.Path(__file__).resolve().parents[1]
 
 
-def wait_for(predicate, timeout: float = 8):
-    """Wait for a concrete local observation, raising instead of silently timing out."""
-    deadline = time.monotonic() + timeout
+# Login confirmation budget, from the Fanvil path in phone_client.hpp / fanvil_x3s.hpp.
+# One challenge is four exchanges: GET /, GET nonce, POST /, GET the protected page.
+# Each exchange may wait until the 6s incomplete-read deadline. Each later exchange
+# also waits quiet_interval_ms (1100). login() repeats that challenge up to three
+# times and sleeps auth_backoff_ms (300) times the attempt index between failures.
+# The quiet interval before attempts 2 and 3 overlaps that sleep, so only the
+# remainder is added. The sum is 84.1 seconds: an upper bound for a slow login,
+# not an expected duration.
+_LOGIN_READ_S = 6.0
+_LOGIN_QUIET_S = 1.1
+_LOGIN_REQUESTS = 4
+_LOGIN_ATTEMPTS = 3
+_LOGIN_BACKOFF_S = 0.3 * (1 + 2)
+_LOGIN_QUIET_AFTER_BACKOFF_S = max(0.0, _LOGIN_QUIET_S - 0.3) + max(0.0, _LOGIN_QUIET_S - 0.6)
+LOGIN_CONFIRM_TIMEOUT = (
+    _LOGIN_ATTEMPTS * (_LOGIN_REQUESTS * _LOGIN_READ_S + (_LOGIN_REQUESTS - 1) * _LOGIN_QUIET_S)
+    + _LOGIN_BACKOFF_S
+    + _LOGIN_QUIET_AFTER_BACKOFF_S
+)
+
+
+def wait_for(predicate, timeout: float = 8, *, target: str = "", log=None):
+    """Wait for a concrete local observation, raising instead of silently timing out.
+
+    target is the condition being waited for. log is a string or a zero-argument
+    callable; on timeout its last 40 lines are included so every case can be
+    diagnosed from the assertion alone.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
     while time.monotonic() < deadline:
         value = predicate()
         if value:
             return value
         time.sleep(0.03)
-    raise AssertionError("timed out waiting for local evidence")
+    elapsed = time.monotonic() - started
+    text = ""
+    if callable(log):
+        try:
+            text = log() or ""
+        except Exception as exc:
+            text = f"(log unreadable: {type(exc).__name__}: {exc})"
+    elif isinstance(log, str):
+        text = log
+    tail = "\n".join(str(text).splitlines()[-40:])
+    message = f"timed out after {elapsed:.2f}s waiting for {target or 'local evidence'}"
+    if tail:
+        message += "\n" + tail
+    raise AssertionError(message)
 
 
 def free_port() -> int:
@@ -140,7 +180,7 @@ class App:
     def launch(self):
         """Start the actual executable and wait for its explicit listener log."""
         self.process = subprocess.Popen(self.args, cwd=self.root, startupinfo=startup_info(), creationflags=subprocess.CREATE_NO_WINDOW)
-        wait_for(lambda: "CONTROL_LISTENING" in self.log() or "CONTROL_BIND_FAILED" in self.log())
+        wait_for(lambda: "CONTROL_LISTENING" in self.log() or "CONTROL_BIND_FAILED" in self.log(), target="CONTROL_LISTENING or CONTROL_BIND_FAILED", log=self.log)
         return self
 
     def log(self) -> str:
@@ -165,8 +205,8 @@ class App:
     def metadata(self, session: str) -> tuple[pathlib.Path, dict]:
         """Wait for a finalized sidecar and return its corresponding WAV path."""
         suffix = "_" + fingerprint(session) + ".wav.quality.json"
-        path = wait_for(lambda: next((self.root / "recordings").glob("*" + suffix), None) if (self.root / "recordings").exists() else None)
-        content = wait_for(lambda: json.loads(path.read_text(encoding="utf-8")) if path.stat().st_size else None)
+        path = wait_for(lambda: next((self.root / "recordings").glob("*" + suffix), None) if (self.root / "recordings").exists() else None, target="quality sidecar " + suffix, log=self.log)
+        content = wait_for(lambda: json.loads(path.read_text(encoding="utf-8")) if path.stat().st_size else None, target="readable quality sidecar", log=self.log)
         return pathlib.Path(str(path).removesuffix(".quality.json")), content
 
     def shutdown(self):
@@ -431,7 +471,7 @@ def main() -> int:
                         pass
                 assert app.request(start_frame("after-oversize"))["result"] == "success"
                 app.stop_session("after-oversize")
-                wait_for(lambda: "CTRL_FRAME_TOO_LARGE" in app.log())
+                wait_for(lambda: "CTRL_FRAME_TOO_LARGE" in app.log(), target="CTRL_FRAME_TOO_LARGE", log=app.log)
             return "fragmented/NUL, duplicate port reuse, unsupported codec, frame bound and recovery"
 
         check("control_regressions", protocol)
@@ -504,7 +544,7 @@ def main() -> int:
                     assert_pcm_follows_codes(wav.readframes(wav.getnframes()), encoded)
                 # Final metadata is written before the session's summary log. Wait for
                 # that independent completion evidence instead of racing the worker.
-                wait_for(lambda: "RTP_CLOCK_DISCONTINUITY" in app.log() and "RTP_CLOCK_SUMMARY" in app.log())
+                wait_for(lambda: "RTP_CLOCK_DISCONTINUITY" in app.log() and "RTP_CLOCK_SUMMARY" in app.log(), target="RTP_CLOCK_DISCONTINUITY and RTP_CLOCK_SUMMARY", log=app.log)
             return "zero loss with clock gap/overlap detected; sequence/timestamp wrap and source switch handled; PCM follows the payload"
 
         check("rtp_media_clock_diagnostics", media_clock)
@@ -516,7 +556,7 @@ def main() -> int:
             with app:
                 reply = app.request(start_frame("storage-failure"))
                 emit_rtp(int(reply["port"]), [0x80] * 5)
-                wait_for(lambda: "reason=WAV_OPEN_FAILED" in app.log())
+                wait_for(lambda: "reason=WAV_OPEN_FAILED" in app.log(), target="reason=WAV_OPEN_FAILED", log=app.log)
                 assert "RTP_FIRST" in app.log()
             report = (evidence / "storage_failure.report.txt").read_text(encoding="utf-8")
             assert "rtp=1" in report and "files=0" in report and "Code: WAV_OPEN_FAILED" in report, report[:600]
@@ -551,7 +591,7 @@ def main() -> int:
                 emit_rtp(int(reply["port"]), [0x80] * 50 + [0xA0] * 50 + [0x90] * 50)
                 app.stop_session("unicode")
                 folder = app.root / "录音资料"
-                metadata = wait_for(lambda: next(folder.glob("*.quality.json"), None) if folder.exists() else None)
+                metadata = wait_for(lambda: next(folder.glob("*.quality.json"), None) if folder.exists() else None, target="unicode quality sidecar", log=app.log)
                 assert "测试来源" in metadata.name
                 content = json.loads(metadata.read_text(encoding="utf-8"))
                 assert content["quality"] == "audio" and content["source"] == "test_or_other_peer"
@@ -575,7 +615,7 @@ def main() -> int:
             """A successful control response without RTP must produce no success WAV."""
             with App(root, exe, evidence, "no_media") as app:
                 assert app.request(start_frame("no-media"))["result"] == "success"
-                wait_for(lambda: "SESSION_NO_AUDIO" in app.log(), 12)
+                wait_for(lambda: "SESSION_NO_AUDIO" in app.log(), 12, target="SESSION_NO_AUDIO", log=app.log)
                 assert not list((app.root / "recordings").glob("*.wav"))
                 assert "RTP_NOT_RECEIVED" in app.log()
             return "control success followed by explicit RTP_NOT_RECEIVED, no WAV"
@@ -588,7 +628,7 @@ def main() -> int:
                 reserved.bind(("127.0.0.1", 0))
                 reserved.listen()
                 with App(root, exe, evidence, "event_conflict", event_port=reserved.getsockname()[1]) as app:
-                    wait_for(lambda: "EVENT_BIND_FAILED" in app.log())
+                    wait_for(lambda: "EVENT_BIND_FAILED" in app.log(), target="EVENT_BIND_FAILED", log=app.log)
                 assert "Code: EVENT_BIND_FAILED" in (evidence / "event_conflict.report.txt").read_text(encoding="utf-8")
             return "occupied port retained; native report identifies event bind failure"
 
@@ -602,12 +642,12 @@ def main() -> int:
                 phone.control_port = app.control
                 phone.callback_port = app.event
                 with app:
-                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
-                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 8)
+                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), LOGIN_CONFIRM_TIMEOUT, target="AUTH_VERIFIED", log=app.log)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 8, target="compatibility verdict ready", log=app.log)
                     before_start = len(phone.requests)
                     assert http_get(app.event, "/event?ev=est")[0] == 200
                     assert http_get(app.event, "/event?ev=est")[0] == 200
-                    wait_for(lambda: phone.media_done.is_set(), 10)
+                    wait_for(lambda: phone.media_done.is_set(), 10, target="first synthetic media", log=app.log)
                     assert not any(method == "GET" for _, method, _ in phone.requests[before_start:]), "recent readiness was queried again at answer"
                     assert "recent_ready=1" in app.log(), "recent idle state was not reused"
                     assert http_get(app.event, "/event?ev=end")[0] == 200
@@ -634,15 +674,15 @@ def main() -> int:
                 app.config.write_text(app.config.read_text(encoding="utf-8") + "health_interval=0\n", encoding="utf-8")
                 phone.control_port, phone.callback_port = app.control, app.event
                 with app:
-                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
+                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), LOGIN_CONFIRM_TIMEOUT, target="AUTH_VERIFIED", log=app.log)
                     assert http_get(app.event, "/event?ev=est")[0] == 200
-                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "deferred", 5)
-                    wait_for(lambda: phone.media_done.is_set(), 10)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "deferred", 5, target="compatibility verdict deferred", log=app.log)
+                    wait_for(lambda: phone.media_done.is_set(), 10, target="startup-retry media", log=app.log)
                     assert http_get(app.event, "/event?ev=end")[0] == 200
-                    wait_for(lambda: "STOP_COMPLETE" in app.log(), 8)
-                    wait_for(lambda: json.loads(http_get(app.event, "/health")[1])["active_sessions"] == 0)
+                    wait_for(lambda: "STOP_COMPLETE" in app.log(), 8, target="STOP_COMPLETE", log=app.log)
+                    wait_for(lambda: json.loads(http_get(app.event, "/health")[1])["active_sessions"] == 0, target="no active sessions", log=app.log)
                     before_retry = len(phone.requests)
-                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 28)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 28, target="compatibility verdict ready after idle", log=app.log)
                     assert phone.start_calls == 1 and not phone.errors, phone.errors
                     assert all(method == "GET" for _, method, _ in phone.requests[before_retry:]), "idle retry wrote to phone"
             return "startup inspection yields to call, then completes automatically after 20-second idle with health_interval=0"
@@ -658,27 +698,27 @@ def main() -> int:
                 phone.control_port = app.control
                 phone.callback_port = app.event
                 with app:
-                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), 10)
-                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 8)
+                    wait_for(lambda: "AUTH_VERIFIED" in app.log(), LOGIN_CONFIRM_TIMEOUT, target="AUTH_VERIFIED", log=app.log)
+                    wait_for(lambda: json.loads(http_get(app.event, "/compatibility")[1])["verdict"] == "ready", 8, target="compatibility verdict ready", log=app.log)
                     assert http_get(app.event, "/event?ev=est")[0] == 200
-                    wait_for(lambda: phone.media_done.is_set(), 15)
+                    wait_for(lambda: phone.media_done.is_set(), 15, target="stale-start media", log=app.log)
                     assert phone.start_calls == 1 and "START_STALE_STATE" in app.log(), app.log()[-1500:]
                     assert "recent_ready=0" in app.log()
                     posts = [path for _, method, path in phone.requests if method == "POST"]
                     assert posts.index("/Stop") < posts.index("/Start"), posts
                     assert http_get(app.event, "/event?ev=end")[0] == 200
-                    wait_for(lambda: "STOP_COMPLETE" in app.log())
-                    wait_for(lambda: json.loads(http_get(app.event, "/health")[1])["active_sessions"] == 0)
+                    wait_for(lambda: "STOP_COMPLETE" in app.log(), target="STOP_COMPLETE", log=app.log)
+                    wait_for(lambda: json.loads(http_get(app.event, "/health")[1])["active_sessions"] == 0, target="no active sessions", log=app.log)
                     # Stop invalidates the earlier ready page. A following call needs
                     # a fresh protected-page query even while its age would be valid.
                     previous_queries = len([p for _, m, p in phone.requests if m == "GET" and p == "/record.htm"])
                     phone.media_done.clear()
                     assert http_get(app.event, "/event?ev=est")[0] == 200
-                    wait_for(lambda: phone.start_calls == 2, 8)
-                    wait_for(lambda: phone.media_done.is_set(), 8)
+                    wait_for(lambda: phone.start_calls == 2, 8, target="second Start", log=app.log)
+                    wait_for(lambda: phone.media_done.is_set(), 8, target="second synthetic media", log=app.log)
                     assert len([p for _, m, p in phone.requests if m == "GET" and p == "/record.htm"]) == previous_queries + 1
                     assert http_get(app.event, "/event?ev=end")[0] == 200
-                    wait_for(lambda: app.log().count("STOP_COMPLETE") == 2)
+                    wait_for(lambda: app.log().count("STOP_COMPLETE") == 2, target="two STOP_COMPLETE", log=app.log)
                     assert not phone.errors, phone.errors
             return "busy state reset retained; Stop forces fresh query on the next call"
 
@@ -691,7 +731,7 @@ def main() -> int:
                 app = App(root, exe, evidence, "auth_cache", offline=False, phone_port=phone.port, password=password)
                 (app.root / ".phone_cookie").write_text(phone.cookie, encoding="utf-8")
                 with app:
-                    wait_for(lambda: "AUTH_CACHE_VALID" in app.log(), 8)
+                    wait_for(lambda: "AUTH_CACHE_VALID" in app.log(), LOGIN_CONFIRM_TIMEOUT, target="AUTH_CACHE_VALID", log=app.log)
                     assert not phone.errors, phone.errors
                     assert (app.root / ".phone_cookie").read_text(encoding="utf-8").startswith("dpapi:")
                 assert all(method != "POST" for _, method, _ in phone.requests), "cache branch unexpectedly reauthenticated"
