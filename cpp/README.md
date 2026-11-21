@@ -81,7 +81,8 @@ API 編譯目標保留 Windows 7，但目前只驗證本機 Windows 環境；未
 | `phonerecord.cpp` | 既有 G.711、RTP、配置、通訊錄與錄音清單，整合單一編譯單元 |
 | `diagnostics.hpp` | 有界日誌、診斷快照、完整發送與 PCM 品質分析 |
 | `recording_core.hpp` | TCP 切幀、UDP 接收、會話／執行緒生命週期 |
-| `phone_client.hpp` | Fanvil challenge、快取驗證、1.1 秒安靜間隔、單次 Start 與唯讀設定檢查 |
+| `phone_client.hpp` | 依目前話機型號元件執行網頁認證、快取驗證、安靜間隔、單次 Start 與唯讀設定檢查 |
+| `device_model.hpp` / `models/` | 型號契約、比對、內建 Fanvil X3S 與範本；`plugins` 目錄載入外部元件 |
 | `compatibility.hpp` | 有界 HTML 欄位解析、地址不外露的檢查結果、檢查後新通話的證據邊界 |
 | `event_server.hpp` | 有界 HTTP 事件服務，完整回應後才排程動作 |
 | `product_version.h` | C++ 與 Windows 版本資源共用的版本權威 |
@@ -112,6 +113,7 @@ py -3 tests\desktop_smoke.py --output docs\probe\onboarding_20261103
 
 三語／輸入／說明：`tests\localization_smoke.py --output docs\probe\onboarding_20261103\localization`。
 事件埠遷移保護：`tests\event_port_migration.py`，使用合成表單驗證只改兩欄及回讀失敗的有界回復。
+話機型號元件：`pwsh -File tools\Test-DeviceModel.ps1`。以合成證據驗證載入、比對、Fanvil X3S 契約與外部程式庫，不連線話機。
 
 介面測試使用 Pillow 產生離線 UI 預覽，產品程式本身不依賴 Pillow 或 Python。
 首次使用／適配／通知：`tests\onboarding_smoke.py --output docs\probe\onboarding_20261103\onboarding`。

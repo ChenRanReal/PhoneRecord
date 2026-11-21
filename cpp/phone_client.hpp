@@ -1,11 +1,13 @@
 #pragma once
 
-/// Serialized Fanvil web client preserving the device's existing challenge protocol.
+/// Serialized web client. Paths, tokens and timing come from the active device model.
 class PhoneClient {
 public:
     /// Read only existing phone contacts and calllog names on the serialized idle worker.
     bool syncDirectory() {
         std::lock_guard<std::mutex> guard(mutex_);
+        const PrDeviceProfile& profile = activeDeviceProfile();
+        if ((profile.capabilities & PR_CAP_DIRECTORY) == 0) return false;
         if (g_offline || !diagnosticSnapshot().authenticated) return false;
         LOGI("DIRECTORY_SYNC_BEGIN");
         std::map<string, string> local, history;
@@ -19,7 +21,7 @@ public:
             return head.find(" 200 ") != string::npos && parseDirectoryXml(body, fromHistory, names);
         };
         // Commit neither source if a read fails; a login page or broken response must not erase names.
-        if (!read("/contacts.xml", false, local) || !read("/calllog.xml", true, history)) {
+        if (!read(profile.contacts_path, false, local) || !read(profile.calllog_path, true, history)) {
             LOGW("%s", requestDeferred_ ? "DIRECTORY_SYNC_DEFERRED" : "DIRECTORY_SYNC_FAILED");
             return false;
         }
@@ -36,6 +38,7 @@ public:
     bool login(bool idleOnly = false) {
         std::lock_guard<std::mutex> guard(mutex_);
         if (g_offline) { LOGI("AUTH_SKIPPED offline=true"); return false; }
+        if (std::strcmp(prText(activeDeviceProfile().auth_scheme), "fanvil-nonce-md5") != 0) return authFailure("DEVICE_MODEL_UNSUPPORTED");
         readyObserved_ = 0;
         if (phoneAddress().empty()) return authFailure("PHONE_ADDRESS_UNRESOLVED");
         if (g_cfg.phoneAddressMode == "dhcp" && !phonePaired()) {
@@ -49,7 +52,8 @@ public:
         // Reuse the saved session first: a fresh challenge on every launch exhausts the phone's small session table.
         if (!cookie_.empty()) {
             string head, body;
-            const bool valid = request("GET", "/record.htm", "", head, body, idleOnly) && protectedPage(head, body);
+            const bool valid = request("GET", activeDeviceProfile().record_page, "", head, body, idleOnly) && protectedPage(head, body);
+            if (valid) notePhonePage(body);
             LOGI("AUTH_CACHE_PROBE valid=%d", valid);
             if (valid) { rememberRecordState(body); saveCookie(); return authSuccess("AUTH_CACHE_VALID"); }
             if (idleOnly && requestDeferred_) return false;
@@ -58,13 +62,16 @@ public:
         const auto tryLogin = [&](bool allowCache) -> const char* {
             string head, body;
             if (!request("GET", "/", "", head, body, idleOnly)) return "PHONE_UNREACHABLE";
+            notePhonePage(body);
+            if (std::strcmp(prText(activeDeviceProfile().auth_scheme), "fanvil-nonce-md5") != 0) return "DEVICE_MODEL_UNSUPPORTED";
             if (head.find("503") != string::npos) return "PHONE_BUSY";
+            const string cookieName = string(activeDeviceProfile().cookie_name) + "=";
             string sessionCookie = headerValue(head, "Set-Cookie");
-            const size_t auth = sessionCookie.find("auth=");
+            const size_t auth = sessionCookie.find(cookieName);
             if (auth == string::npos) sessionCookie.clear();
-            else { sessionCookie = sessionCookie.substr(auth + 5); sessionCookie = sessionCookie.substr(0, sessionCookie.find(';')); }
+            else { sessionCookie = sessionCookie.substr(auth + cookieName.size()); sessionCookie = sessionCookie.substr(0, sessionCookie.find(';')); }
             if (!sessionCookie.empty()) cookie_ = sessionCookie;
-            if (!request("GET", "/key==nonce?now=" + std::to_string(GetTickCount64()), "", head, body, idleOnly)) return "AUTH_NONCE_FAILED";
+            if (!request("GET", string(activeDeviceProfile().nonce_path) + "?now=" + std::to_string(GetTickCount64()), "", head, body, idleOnly)) return "AUTH_NONCE_FAILED";
             if (head.find("503") != string::npos) return "PHONE_BUSY";
             if (loginPage(body)) return "AUTH_NONCE_FAILED";
             const string nonceBody = trim(body);
@@ -76,19 +83,21 @@ public:
             if (nonce.size() < 8) {
                 // A successful request must enter the cache-validation branch. The previous
                 // implementation tested !request(), then cleared an otherwise valid cookie.
-                if (allowCache && !cookie_.empty() && request("GET", "/record.htm", "", head, body, idleOnly) && protectedPage(head, body)) {
+                if (allowCache && !cookie_.empty() && request("GET", activeDeviceProfile().record_page, "", head, body, idleOnly) && protectedPage(head, body)) {
                     rememberRecordState(body); saveCookie(); authSuccess("AUTH_CACHE_VALID"); return nullptr;
                 }
                 return "AUTH_SESSION_INVALID";
             }
             cookie_ = nonce;
             const string digest = Md5::hex(g_cfg.phoneUser + ":" + g_cfg.phonePass + ":" + nonce);
-            const string form = "encoded=" + urlEncode(g_cfg.phoneUser + ":" + digest) + "&CurLanguage=cn&ReturnPage=/";
+            const PrDeviceProfile& profile = activeDeviceProfile();
+            const string form = "encoded=" + urlEncode(g_cfg.phoneUser + ":" + digest) + "&CurLanguage=" + profile.login_language + "&ReturnPage=" + profile.return_page;
             if (!request("POST", "/", form, head, body, idleOnly)) return "AUTH_POST_FAILED";
             if (head.find("503") != string::npos) return "PHONE_BUSY";
             if (loginPage(body) || head.find("200") == string::npos) return "AUTH_REJECTED";
             if (!sessionCookie.empty()) cookie_ = sessionCookie;
-            if (!request("GET", "/record.htm", "", head, body, idleOnly) || !protectedPage(head, body)) return "AUTH_VERIFY_FAILED";
+            if (!request("GET", activeDeviceProfile().record_page, "", head, body, idleOnly) || !protectedPage(head, body)) return "AUTH_VERIFY_FAILED";
+            notePhonePage(body);
             rememberRecordState(body);
             saveCookie();
             authSuccess("AUTH_VERIFIED");
@@ -105,10 +114,11 @@ public:
                                    !strcmp(failure, "AUTH_REJECTED") || !strcmp(failure, "AUTH_VERIFY_FAILED");
             if (!retryable || attempt == 3) break;
             // Another phone page may hold the device's single session: drop the cache and start a fresh challenge.
-            if (idleOnly) LOGI("AUTH_RETRY code=%s attempt=%d backoff_ms=%d", failure, attempt, 300 * attempt);
-            else LOGW("AUTH_RETRY code=%s attempt=%d backoff_ms=%d", failure, attempt, 300 * attempt);
+            const int backoff = activeDeviceProfile().auth_backoff_ms * attempt;
+            if (idleOnly) LOGI("AUTH_RETRY code=%s attempt=%d backoff_ms=%d", failure, attempt, backoff);
+            else LOGW("AUTH_RETRY code=%s attempt=%d backoff_ms=%d", failure, attempt, backoff);
             cookie_.clear();
-            Sleep(300 * attempt);
+            Sleep(backoff);
         }
         return authFailure(failure ? failure : "AUTH_SESSION_INVALID", idleOnly);
     }
@@ -116,26 +126,28 @@ public:
     /// Send a single Start action and wait only for local RTP evidence, never extra HTTP polling.
     bool startRecord() {
         std::lock_guard<std::mutex> guard(mutex_);
+        const PrDeviceProfile& profile = activeDeviceProfile();
         if (g_offline) return operationFailure("OFFLINE_MODE");
+        if ((profile.capabilities & PR_CAP_WEB_API) == 0) return operationFailure("DEVICE_MODEL_UNSUPPORTED");
         string head, body;
         // Reuse a recent idle observation from login/health; querying again here costs
-        // another 1.1-second device quiet interval before Start can be sent.
-        const bool recentReady = readyObserved_ && GetTickCount64() - readyObserved_ <= 65000;
-        const int state = recentReady ? 4 : recordState();
+        // another device quiet interval before Start can be sent.
+        const bool recentReady = readyObserved_ && GetTickCount64() - readyObserved_ <= static_cast<ULONGLONG>(profile.ready_remember_ms);
+        const int state = recentReady ? profile.ready_state : recordState();
         LOGI("START_GUARD record_status=%d recent_ready=%d", state, recentReady);
         if (state < 0) return operationFailure(stale_ ? "AUTH_EXPIRED" : "PHONE_STATE_UNAVAILABLE");
-        if (state != 4) {
+        if (state != profile.ready_state) {
             LOGW("START_STALE_STATE record_status=%d reset_once=true", state);
             if (!action("Stop", head, body)) return operationFailure("STALE_STATE_RESET_FAILED");
-            Sleep(1500);
-            if (recordState() != 4) return operationFailure("STALE_STATE_RESET_FAILED");
+            Sleep(profile.action_backoff_ms);
+            if (recordState() != profile.ready_state) return operationFailure("STALE_STATE_RESET_FAILED");
         }
         const uint64_t before = diagnosticSnapshot().packets;
         if (g_callEnded) return operationFailure("CALL_ENDED_BEFORE_START");
         diagnosticStage(RecordingStage::Command, "START_HTTP_SENT");
         if (!action("Start", head, body)) return false;
-        LOGI("START_ACCEPTED wait_rtp_ms=8000 repeat_start=false");
-        for (int elapsed = 0; elapsed < 8000 && !g_stopping && !g_callEnded; elapsed += 100) {
+        LOGI("START_ACCEPTED wait_rtp_ms=%d repeat_start=false", profile.media_wait_ms);
+        for (int elapsed = 0; elapsed < profile.media_wait_ms && !g_stopping && !g_callEnded; elapsed += 100) {
             if (diagnosticSnapshot().packets > before) { LOGI("START_MEDIA_CONFIRMED elapsed_ms=%d", elapsed); return true; }
             Sleep(100);
         }
@@ -151,6 +163,7 @@ public:
     bool stopRecord() {
         std::lock_guard<std::mutex> guard(mutex_);
         if (g_offline) return operationFailure("OFFLINE_MODE");
+        if ((activeDeviceProfile().capabilities & PR_CAP_WEB_API) == 0) return operationFailure("DEVICE_MODEL_UNSUPPORTED");
         string head, body;
         const bool ok = action("Stop", head, body);
         if (ok) LOGI("STOP_HTTP_ACCEPTED");
@@ -187,22 +200,24 @@ public:
         add("local", local ? "pass" : "fail", local ? "local_ok" : "local_fix");
         if (!diagnosticSnapshot().authenticated) { add("authentication", "pending", "auth_fix"); done("unavailable"); return; }
         string head, body;
-        if (!request("GET", "/record.htm", "", head, body, true) || !protectedPage(head, body)) {
+        if (!request("GET", activeDeviceProfile().record_page, "", head, body, true) || !protectedPage(head, body)) {
             if (loginPage(body) || head.find("401") != string::npos) { stale_ = true; diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; }); diagnosticHealth(true, false, "AUTH_EXPIRED"); }
             add("authentication", "pending", "auth_fix"); done(requestDeferred_ ? "deferred" : "unavailable"); return;
         }
         add("authentication", "pass", "auth_ok");
+        notePhonePage(body);
+        const PrDeviceProfile& profile = activeDeviceProfile();
         const auto fields = readPhoneForm(body);
-        const char* required[] = {"EnableRecord_RW", "CSE_RecordType_RW", "CSE_RecordVoiceCodec_R", "SYS_RecordAddr_RW", "SYS_RecordPort_RW"};
+        const char* required[] = {profile.field_enable, profile.field_type, profile.field_codec, profile.field_address, profile.field_port};
         for (const char* key : required) if (fields.find(key) == fields.end()) { add("profile", "pending", "profile_missing"); done("unsupported"); return; }
         report.recognizedProfile = true; add("profile", "pass", "profile_ok");
         const auto value = [&](const char* key) { return fields.at(key); };
-        const bool enabled = value("EnableRecord_RW") == "1";
-        const bool network = value("CSE_RecordType_RW") == "1";
-        const string codec = toLower(value("CSE_RecordVoiceCodec_R"));
-        const bool supportedCodec = codec == "pcma" || codec == "pcmu";
-        const bool address = value("SYS_RecordAddr_RW") == g_cfg.advertiseIp;
-        const bool port = configurationInteger(value("SYS_RecordPort_RW")) == g_cfg.controlPort;
+        const bool enabled = value(profile.field_enable) == profile.value_enabled;
+        const bool network = value(profile.field_type) == profile.value_network;
+        const string codec = toLower(value(profile.field_codec));
+        const bool supportedCodec = codec == toLower(profile.value_codec_pcma) || codec == toLower(profile.value_codec_pcmu);
+        const bool address = value(profile.field_address) == g_cfg.advertiseIp;
+        const bool port = configurationInteger(value(profile.field_port)) == g_cfg.controlPort;
         add("enabled", enabled ? "pass" : "fail", enabled ? "enabled_ok" : "enabled_fix");
         add("mode", network ? "pass" : "fail", network ? "mode_ok" : "mode_fix");
         add("codec", supportedCodec ? "pass" : "fail", supportedCodec ? "codec_ok" : "codec_fix");
@@ -211,14 +226,14 @@ public:
         bool callbacks = true;
         if (report.externalTrigger) add("callbacks", "skip", "external");
         else {
-            if (!request("GET", "/action.htm", "", head, body, true) || head.find("200") == string::npos || loginPage(body)) {
+            if (!request("GET", profile.action_page, "", head, body, true) || head.find("200") == string::npos || loginPage(body)) {
                 if (loginPage(body) || head.find("401") != string::npos) { stale_ = true; diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; }); diagnosticHealth(true, false, "AUTH_EXPIRED"); }
                 add("callbacks", "pending", "callbacks_read"); done(requestDeferred_ ? "deferred" : "unavailable"); return;
             }
             const auto actions = readPhoneForm(body);
-            const auto established = actions.find("AURL_CallEstablished_RW"), ended = actions.find("AURL_CallTerminated_RW");
+            const auto established = actions.find(profile.field_established), ended = actions.find(profile.field_terminated);
             if (established == actions.end() || ended == actions.end()) { add("callbacks", "pending", "callbacks_missing"); done("unsupported"); return; }
-            const bool est = compatibleCallback(established->second, "est"), end = compatibleCallback(ended->second, "end");
+            const bool est = compatibleCallback(established->second, prCanonicalToken(profile, PR_EVENT_ESTABLISHED)), end = compatibleCallback(ended->second, prCanonicalToken(profile, PR_EVENT_TERMINATED));
             callbacks = est && end;
             if (g_cfg.phoneAddressMode == "dhcp") {
                 const auto acceptable = [&](const char* key, const char* event, bool& owned) {
@@ -229,7 +244,7 @@ public:
                     owned = false; return true;
                 };
                 bool owned = true;
-                const bool tracking = phonePaired() && acceptable("AURL_SetupCompleted_RW", "ready", owned) && acceptable("AURL_IpChange_RW", "ip", owned);
+                const bool tracking = phonePaired() && acceptable(profile.field_setup_completed, prCanonicalToken(profile, PR_EVENT_READY), owned) && acceptable(profile.field_ip_change, prCanonicalToken(profile, PR_EVENT_ADDRESS), owned);
                 callbacks = callbacks && tracking;
                 add("address_callbacks", tracking ? "pass" : "fail", !tracking ? "pairing_fix" : owned ? "callback_ok" : "address_kept");
             }
@@ -272,21 +287,25 @@ private:
         diagnosticStage(RecordingStage::Failed, code); LOGW("%s", code); return false;
     }
 
-    /// Identify the device's HTTP-200 login-page disguise.
+    /// Identify the active component's HTTP-200 login-page disguise.
     static bool loginPage(const string& body) {
-        return body.find("logon_content") != string::npos || body.find("Password Error") != string::npos || body.find("Not Authorized") != string::npos;
+        const char* const* marker = activeDeviceProfile().login_page_markers;
+        if (!marker) return false;
+        for (; *marker; ++marker) if (*marker && body.find(*marker) != string::npos) return true;
+        return false;
     }
 
     /// Require an authenticated recording page, not merely a successful HTTP status.
     static bool protectedPage(const string& head, const string& body) {
-        return head.find("200") != string::npos && !loginPage(body) && body.find("recordStatus") != string::npos;
+        const char* marker = prText(activeDeviceProfile().protected_marker);
+        return head.find("200") != string::npos && !loginPage(body) && marker[0] && body.find(marker) != string::npos;
     }
 
     /// Parse recording state using the device page already cleaned by the HTTP transport.
     int recordState(bool idleOnly = false) {
         readyObserved_ = 0;
         string head, body;
-        if (!request("GET", "/record.htm", "", head, body, idleOnly) || !protectedPage(head, body)) {
+        if (!request("GET", activeDeviceProfile().record_page, "", head, body, idleOnly) || !protectedPage(head, body)) {
             if (requestDeferred_) return -2;
             if (loginPage(body)) { stale_ = true; diagnosticUpdate([](DiagnosticSnapshot& state) { state.authenticated = false; }); }
             return -1;
@@ -296,9 +315,10 @@ private:
 
     /// Retain only a protected-page idle observation, bounded to one health-check cycle.
     int rememberRecordState(const string& body) {
+        const PrDeviceProfile& profile = activeDeviceProfile();
         std::smatch match;
-        const int state = std::regex_search(body, match, std::regex("recordStatus\\s*=\\s*\"\\s*(\\d+)")) ? atoi(match[1].str().c_str()) : -1;
-        readyObserved_ = state == 4 ? GetTickCount64() : 0;
+        const int state = profile.record_status_regex[0] && std::regex_search(body, match, std::regex(profile.record_status_regex)) ? atoi(match[1].str().c_str()) : -1;
+        readyObserved_ = state == profile.ready_state ? GetTickCount64() : 0;
         return state;
     }
 
@@ -308,11 +328,15 @@ private:
         // reached the phone. Either action consumes the previous ready observation.
         readyObserved_ = 0;
         stale_ = false;
+        const PrDeviceProfile& profile = activeDeviceProfile();
+        const char* path = std::strcmp(name, "Start") == 0 ? profile.start_path : std::strcmp(name, "Stop") == 0 ? profile.stop_path : "";
+        if (!path || !*path) return operationFailure("DEVICE_MODEL_UNSUPPORTED");
         for (int attempt = 0; attempt < 3 && !g_stopping; ++attempt) {
-            if (!request("POST", string("/") + name, string("DefaultRecord=") + name, head, body)) return operationFailure("HTTP_TRANSPORT_FAILED");
+            if (!request("POST", path, string(profile.action_body_prefix) + name, head, body)) return operationFailure("HTTP_TRANSPORT_FAILED");
             if (head.find("503") != string::npos) {
-                LOGW("HTTP_BUSY action=%s attempt=%d backoff_ms=%d", name, attempt + 1, 1500 * (attempt + 1));
-                if (attempt < 2) { Sleep(1500 * (attempt + 1)); continue; }
+                const int backoff = profile.action_backoff_ms * (attempt + 1);
+                LOGW("HTTP_BUSY action=%s attempt=%d backoff_ms=%d", name, attempt + 1, backoff);
+                if (attempt < 2) { Sleep(backoff); continue; }
                 return operationFailure("PHONE_BUSY");
             }
             if (head.find("401") != string::npos || loginPage(body)) {
@@ -411,7 +435,7 @@ private:
         if (target.empty()) { LOGW("PHONE_ADDRESS_UNRESOLVED"); return false; }
         if (target != endpoint_) { if (!endpoint_.empty()) cookie_.clear(); readyObserved_ = 0; endpoint_ = target; }
         if (lastCompleted_ != std::chrono::steady_clock::time_point{})
-            std::this_thread::sleep_until(lastCompleted_ + std::chrono::milliseconds(1100));
+            std::this_thread::sleep_until(lastCompleted_ + std::chrono::milliseconds(activeDeviceProfile().quiet_interval_ms));
         if (idleOnly && (diagnosticSnapshot().callActive || g_sessionCount > 0)) { requestDeferred_ = true; return false; }
         /// Retain pacing on every return path, including partial/failed exchanges.
         struct CompleteExchange {
@@ -441,13 +465,13 @@ private:
         request << method << ' ' << path << " HTTP/1.1\r\nHost: " << target << "\r\nUser-Agent: Mozilla/5.0\r\n";
         if (!body.empty()) request << "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " << body.size() << "\r\n";
         request << "Referer: http://" << target << path << "\r\n";
-        if (!cookie_.empty()) request << "Cookie: auth=" << cookie_ << "\r\n";
+        if (!cookie_.empty()) request << "Cookie: " << activeDeviceProfile().cookie_name << '=' << cookie_ << "\r\n";
         request << "Connection: close\r\n\r\n" << body;
         const string payload = request.str();
         const string safePath = path.substr(0, path.find('?'));
         LOGI("HTTP_SEND method=%s path=%s bytes=%zu cookie_present=%d", method.c_str(), safePath.c_str(), payload.size(), !cookie_.empty());
         if (!sendComplete(connection, payload, 3000)) { LOGE("HTTP_SEND_FAILED wsa=%d", WSAGetLastError()); closesocket(connection); return false; }
-        if (path == "/Start") diagnosticUpdate([](DiagnosticSnapshot& state) { state.attemptHttp = true; });
+        if (path == activeDeviceProfile().start_path) diagnosticUpdate([](DiagnosticSnapshot& state) { state.attemptHttp = true; });
         string response;
         const ULONGLONG deadline = GetTickCount64() + 6000;
         bool complete = false;
@@ -473,6 +497,14 @@ private:
         if (toLower(head).find("chunked") != string::npos) content = dechunk(content);
         LOGI("HTTP_RESULT method=%s path=%s status=%s body_bytes=%zu login_page=%d elapsed_ms=%llu", method.c_str(), safePath.c_str(), head.substr(0, head.find("\r\n")).c_str(), content.size(), loginPage(content), GetTickCount64() - started);
         return true;
+    }
+
+    /// Let a phone page refine automatic matching. An active call keeps the current component.
+    void notePhonePage(const string& body) {
+        if (diagnosticSnapshot().callActive || g_sessionCount > 0) return;
+        const auto before = deviceModels().selection();
+        const auto after = deviceModels().observeHttpBody(body);
+        if (after.id != before.id) LOGI("DEVICE_MODEL_SELECTED id=%s reason=%s score=%d", after.id.c_str(), after.reason.c_str(), after.score);
     }
 
     /// Current authentication cookie; never included in diagnostic exports.

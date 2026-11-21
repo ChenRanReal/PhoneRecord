@@ -21,6 +21,9 @@ jobs:
       - name: Build native x86 desktop
         shell: cmd
         run: cpp\build.bat
+      - name: Verify device model loading and Fanvil contract
+        shell: pwsh
+        run: ./tools/Test-DeviceModel.ps1
       - name: Verify update protocol and state machine
         shell: pwsh
         run: ./tools/Test-Updates.ps1 -SkipTray
