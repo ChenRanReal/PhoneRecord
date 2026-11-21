@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 #: Source root containing the directly built native executable.
 BASE = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BASE / "src"))
+sys.path.insert(0, str(BASE / "tests"))
 import g711  # noqa: E402
 
 
