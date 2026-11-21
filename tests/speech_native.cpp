@@ -91,6 +91,37 @@ struct SpeechFixture {
         assert(!missing.process(wstring(system) + L"\\cmd.exe",L"/d /c exit 7",0,5000));
         assert(missing.state().failureCode == "process_failed" && missing.state().processExit == "7"); missing.stop();
     }
+    /// Bundled pins are used as-is. A bad digest blocks setup and does not queue a download.
+    static void bundle(const wstring& config) {
+        SpeechService service; service.start(config);
+        assert(service.configure(true, "auto", "huggingface.co"));
+        SpeechBundleClaim claim; claim.sense = true;
+        std::map<std::string, SpeechFileFact> files;
+        for (const SpeechPin& pin : kSpeechPins) if (std::strcmp(pin.model, "sense") == 0) files[pin.relative] = SpeechFileFact{true, pin.size, pin.sha256};
+        for (const SpeechRuntimeFile& file : kSpeechRuntimeFiles) if (std::strcmp(file.model, "sense") == 0) files[file.relative] = SpeechFileFact{true, 1, ""};
+        service.testSetBundle(true, claim, files);
+        assert(service.testOrigin("sense") == "bundled" && service.testOrigin("qwen") == "download");
+        assert(service.readyFor("sense") && !service.readyFor("qwen"));
+        service.prepare("sense");
+        assert(!service.testInstallQueued());
+        assert(service.state().step == "ready");
+        files["models/model.int8.onnx"].sha256.assign(64, '0');
+        service.testSetBundle(true, claim, files);
+        assert(service.testOrigin("sense") == "blocked");
+        assert(!service.readyFor("sense"));
+        service.prepare("sense");
+        assert(!service.testInstallQueued());
+        assert(service.state().failureCode == "integrity");
+        service.stop();
+        SpeechService plain; plain.start(config + L"-plain");
+        plain.testSetBundle(false, SpeechBundleClaim{}, {});
+        assert(plain.testOrigin("sense") == "download" && plain.testOrigin("qwen17") == "download");
+        plain.stop();
+        const wstring hashed = config + L".sha";
+        string digest;
+        assert(SpeechService::write(hashed, "abc") && SpeechService::sha256File(hashed, digest));
+        assert(digest == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
 };
 
 /// Exercise production queue/persistence/containment and cancellation with synthetic local paths only.
@@ -176,6 +207,7 @@ int main() {
     assert(SpeechService::write(senseJson, "{\"model\":\"sensevoice-int8-2024-07-17\",\"status\":\"complete\",\"text\":\"keep\"}"));
     assert(publishImeTranscript(imeWav.wstring(), {{1.5, "微信输入法"}}, 1.5, false, "wetype", "微信输入法", "", true));
     assert(SpeechService::read(senseJson).find("\"model\":\"wetype\"") != string::npos);
+    SpeechFixture::bundle((root / L"bundle.ini").wstring());
     UpdateManifest manifest;
     const string fields = "\nfile=PhoneRecord.exe\nsize=3\nsha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
     assert(!manifest.parse("PhoneRecord-update-v1\nversion=9.0.0\narch=x86" + fields));

@@ -3,6 +3,7 @@
 #include <winhttp.h>
 #include "json_text.hpp"
 #include "update_protocol.hpp"
+#include "bundled_speech_win.hpp"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -18,7 +19,7 @@ public:
     void cancel() { std::lock_guard<std::mutex> guard(mutex_); stopped_ = true; if (request_) { WinHttpCloseHandle(request_); request_ = NULL; } }
 
     /// Fetch a fixed GitHub HTTPS URL into bounded memory or an owned staging file.
-    DWORD get(const wstring& url, string& bytes, size_t limit, const wstring& destination = L"", const std::function<void(size_t)>& progress = {}) {
+    DWORD get(const wstring& url, string& bytes, size_t limit, const wstring& destination = L"", const std::function<void(size_t)>& progress = {}, ULONGLONG transferBudgetMs = 0) {
 #ifdef PHONERECORD_UPDATE_TESTING
         if (g_updateTestHttp) return g_updateTestHttp(url, bytes, limit, destination, progress);
 #endif
@@ -41,7 +42,7 @@ public:
                 WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
                 WinHttpSetOption(request, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &redirects, sizeof(redirects));
                 WinHttpSetOption(request, WINHTTP_OPTION_AUTOLOGON_POLICY, &autologon, sizeof(autologon));
-                const ULONGLONG deadline = GetTickCount64() + (destination.empty() ? 30000 : 180000);
+                const ULONGLONG deadline = GetTickCount64() + (transferBudgetMs ? transferBudgetMs : (destination.empty() ? 30000ULL : 180000ULL));
                 if (WinHttpSendRequest(request, L"Accept: application/vnd.github+json\r\n", static_cast<DWORD>(-1), NULL, 0, 0, 0) && WinHttpReceiveResponse(request, NULL)) {
                     DWORD size = sizeof(status);
                     WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
@@ -97,6 +98,12 @@ struct UpdateState {
     int percent = 0;
     /// Local completion timestamp of the most recent metadata check in this process.
     string checkedAt;
+    /// True when a verified model pack should travel with this executable update.
+    bool modelPack = false;
+    /// Signed model-pack manifest bytes. They are not the executable manifest.
+    string modelPackManifest, modelPackSignature;
+    /// Parsed pack identity. Unused when modelPack is false.
+    ModelPackManifest modelPackInfo;
     /// Monotonic UI invalidation marker, including preference changes.
     uint64_t revision = 0;
 };
@@ -126,6 +133,7 @@ public:
         if (updateRead(config + L".update-result", result) && (result == "update.installed\n" || result == "update.restored\n" || result == "update.install_failed\n" || result == "update.restore_failed\n" || result == "update.backup_exists\n")) {
             state_.status = result.substr(0, result.size() - 1);
         }
+        refreshBundleHealth();
         schedule_.configure(GetTickCount64(), preferences_.hours, true);
         worker_ = std::thread(&UpdateService::loop, this);
     }
@@ -205,7 +213,7 @@ private:
     static void cleanupStage(const wstring& staged) {
         if (staged.empty()) return;
         const wstring directory = staged.substr(0, staged.find_last_of(L"\\/"));
-        for (const wchar_t* name : {L"PhoneRecord.exe", L"PhoneRecord-updater.exe", L"update-manifest.txt", L"update-manifest.sig"}) DeleteFileW((directory + L"\\" + name).c_str());
+        for (const char* name : kUpdateStagedFiles) DeleteFileW((directory + L"\\" + utf8ToWide(name)).c_str());
         RemoveDirectoryW(directory.c_str());
     }
 
@@ -256,10 +264,26 @@ private:
         if (http_.get(releaseUrl(tag.substr(1), L"update-manifest.txt"), bytes, 4096) != 200 ||
             http_.get(releaseUrl(tag.substr(1), L"update-manifest.sig"), signature, 8192) != 200) { failure("update.incomplete_release"); return; }
         if (!updateSignature(bytes, signature) || !manifest.parse(bytes) || manifest.version != tag.substr(1)) { failure("update.invalid_signature"); return; }
+        ModelPackManifest packInfo; string packBytes, packSignature; bool wantPack = false;
+#ifdef _WIN64
+        refreshBundleHealth();
+        const ModelPackAssets pack = updateDecideModelPack(variant_, bundleHealthy_);
+        if (pack.download && pack.zip[0]) {
+            const wstring zipUrl = releaseAssetUrl(tag.substr(1), pack.zip);
+            const wstring manifestUrl = releaseAssetUrl(tag.substr(1), pack.manifest);
+            const wstring signatureUrl = releaseAssetUrl(tag.substr(1), pack.signature);
+            if (!zipUrl.empty() && assets.count(wideToUtf8(zipUrl)) && assets.count(wideToUtf8(manifestUrl)) && assets.count(wideToUtf8(signatureUrl)) &&
+                http_.get(manifestUrl, packBytes, 4096) == 200 && http_.get(signatureUrl, packSignature, 8192) == 200 &&
+                updateSignature(packBytes, packSignature) && packInfo.parse(packBytes) && packInfo.version == tag.substr(1) && packInfo.file == pack.zip) wantPack = true;
+            else LOGW("UPDATE_MODEL_PACK_UNAVAILABLE variant=%s", updateVariantId(variant_));
+        }
+#endif
         const bool cached = updateWrite(cachePath_, bytes + "\n" + signature);
         std::lock_guard<std::mutex> guard(mutex_);
         if (state_.manifest.version != manifest.version || state_.manifest.sha256 != manifest.sha256) { cleanupStage(state_.staged); state_.staged.clear(); }
         state_.manifest = manifest; state_.signedManifest = bytes; state_.signature = signature; state_.notes = jsonField(release, "body");
+        state_.modelPack = wantPack; state_.modelPackManifest = wantPack ? packBytes : string(); state_.modelPackSignature = wantPack ? packSignature : string();
+        state_.modelPackInfo = wantPack ? packInfo : ModelPackManifest{};
         state_.status = cached ? "update.available" : "update.cache_error"; state_.busy = false; publish();
         LOGI("UPDATE_AVAILABLE version=%s cached=%d", manifest.version.c_str(), cached);
     }
@@ -283,6 +307,27 @@ private:
             DeleteFileW(pending.c_str()); DeleteFileW(path.c_str()); DeleteFileW((directory + L"\\update-manifest.txt").c_str()); DeleteFileW((directory + L"\\update-manifest.sig").c_str()); RemoveDirectoryW(directory.c_str());
             failure(status == 200 ? "update.invalid_download" : "update.network_error"); return;
         }
+#ifdef _WIN64
+        if (candidate.modelPack) {
+            const wstring packPart = directory + L"\\model-pack.zip.part";
+            const wstring packUrl = releaseAssetUrl(candidate.manifest.version, candidate.modelPackInfo.file);
+            string unusedPack;
+            const DWORD packStatus = packUrl.empty() ? 0 : http_.get(packUrl, unusedPack, static_cast<size_t>(candidate.modelPackInfo.size), packPart, [&](size_t size) {
+                std::lock_guard<std::mutex> guard(mutex_);
+                const int percent = candidate.modelPackInfo.size ? static_cast<int>(size * 100 / candidate.modelPackInfo.size) : 0;
+                if (state_.percent != percent) { state_.percent = percent; publish(); }
+            }, 60ULL * 60ULL * 1000ULL);
+            const bool packed = packStatus == 200 && updateHashFile(packPart, candidate.modelPackInfo.size, candidate.modelPackInfo.sha256) &&
+                MoveFileExW(packPart.c_str(), (directory + L"\\model-pack.zip").c_str(), MOVEFILE_WRITE_THROUGH) &&
+                updateWrite(directory + L"\\model-pack-manifest.txt", candidate.modelPackManifest) &&
+                updateWrite(directory + L"\\model-pack-manifest.sig", candidate.modelPackSignature);
+            if (!packed) {
+                DeleteFileW(packPart.c_str()); DeleteFileW((directory + L"\\model-pack.zip").c_str());
+                DeleteFileW((directory + L"\\model-pack-manifest.txt").c_str()); DeleteFileW((directory + L"\\model-pack-manifest.sig").c_str());
+                LOGW("UPDATE_MODEL_PACK_SKIPPED");
+            }
+        }
+#endif
         std::lock_guard<std::mutex> guard(mutex_); state_.staged = path; state_.status = "update.ready"; state_.busy = false; state_.percent = 100; publish();
         LOGI("UPDATE_DOWNLOAD_VERIFIED version=%s", candidate.manifest.version.c_str());
     }
@@ -308,6 +353,40 @@ private:
         }
     }
 
+    /// Fixed HTTPS asset URL. The name must already be one of our published file names.
+    static wstring releaseAssetUrl(const string& version, const string& asset) {
+        std::array<unsigned, 3> parts{};
+        if (!updateVersion(version, parts) || asset.empty() || asset.size() > 180) return L"";
+        for (unsigned char ch : asset) {
+            const bool ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '_';
+            if (!ok) return L"";
+        }
+        return L"https://github.com/ChenRanReal/PhoneRecord/releases/download/v" + utf8ToWide(version) + L"/" + utf8ToWide(asset);
+    }
+    /// Read the variant file and whether that model's bundled files still have the compiled sizes.
+    void refreshBundleHealth() {
+        variant_ = UpdateVariant::Standard;
+        bundleHealthy_ = false;
+#ifdef _WIN64
+        wchar_t executable[32768]{};
+        const DWORD length = GetModuleFileNameW(NULL, executable, 32768);
+        if (!length || length >= 32768) return;
+        const wstring image(executable, length);
+        const size_t slash = image.find_last_of(L"\\/");
+        if (slash == wstring::npos) return;
+        const wstring directory = image.substr(0, slash);
+        string variantBytes;
+        if (updateRead(directory + L"\\install-variant.txt", variantBytes, 4096)) variant_ = updateParseVariant(variantBytes);
+        const char* model = updateVariantModel(variant_);
+        if (!model[0]) return;
+        const wstring bundle = directory + L"\\bundled-speech";
+        const DWORD flags = GetFileAttributesW(bundle.c_str());
+        const bool present = flags != INVALID_FILE_ATTRIBUTES && (flags & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        std::map<std::string, SpeechFileFact> facts;
+        if (present) speechStatBundle(bundle, facts);
+        bundleHealthy_ = speechBundleSized(model, present, facts);
+#endif
+    }
     /// Protect preferences, schedule, request flags and snapshots.
     mutable std::mutex mutex_;
     /// Wake for changes or shutdown without blocking the GUI thread.
@@ -332,4 +411,8 @@ private:
     bool installing_ = false;
     /// Conservative one-hour cooldown after a GitHub 403/429; manual checks also respect it.
     uint64_t rateLimitUntil_ = 0;
+    /// Channel beside this executable. x86 stays standard because it has no speech bundle.
+    UpdateVariant variant_ = UpdateVariant::Standard;
+    /// True when the offline channel's pinned files are present at their compiled sizes.
+    bool bundleHealthy_ = false;
 };

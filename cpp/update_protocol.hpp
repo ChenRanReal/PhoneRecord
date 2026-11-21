@@ -4,6 +4,7 @@
 #include <array>
 #include "product_version.h"
 #include "update_public_key.hpp"
+#include "offline_rules.hpp"
 
 #ifdef PHONERECORD_UPDATE_TESTING
 /// Ephemeral test trust root, compiled only into the native test executable.
@@ -118,12 +119,12 @@ static bool updateWrite(const wstring& path, const string& bytes) {
     DeleteFileW(pending.c_str()); return false;
 }
 
-/// Stream SHA-256 while denying writers and deletion; validate exact signed byte count.
-static bool updateVerifyFile(const wstring& path, const UpdateManifest& manifest) {
+/// Stream SHA-256 while denying writers and deletion; validate an exact byte count and digest.
+static bool updateHashFile(const wstring& path, uint64_t expectedSize, const string& expectedSha256) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{}; HCRYPTPROV provider = 0; HCRYPTHASH hash = 0; bool valid = false;
-    if (GetFileSizeEx(file, &size) && static_cast<uint64_t>(size.QuadPart) == manifest.size &&
+    if (GetFileSizeEx(file, &size) && static_cast<uint64_t>(size.QuadPart) == expectedSize &&
         CryptAcquireContextW(&provider, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) && CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
         BYTE buffer[65536]; DWORD read = 0; bool good = true;
         while (true) {
@@ -134,12 +135,17 @@ static bool updateVerifyFile(const wstring& path, const UpdateManifest& manifest
         BYTE digest[32]{}; DWORD length = sizeof(digest); string actual;
         if (good && CryptGetHashParam(hash, HP_HASHVAL, digest, &length, 0)) {
             for (BYTE byte : digest) { char hex[3]; snprintf(hex, sizeof(hex), "%02x", byte); actual += hex; }
-            valid = actual == manifest.sha256;
+            valid = actual == expectedSha256;
         }
     }
     if (hash) CryptDestroyHash(hash);
     if (provider) CryptReleaseContext(provider, 0);
     CloseHandle(file); return valid;
+}
+
+/// Validate the executable described by a signed manifest.
+static bool updateVerifyFile(const wstring& path, const UpdateManifest& manifest) {
+    return updateHashFile(path, manifest.size, manifest.sha256);
 }
 
 /// Persistent UI update preferences; separate from live phone/recording configuration.

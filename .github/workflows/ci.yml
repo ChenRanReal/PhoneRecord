@@ -27,6 +27,9 @@ jobs:
       - name: Verify local IPv4 defaults and manual overrides
         shell: pwsh
         run: ./tools/Test-LocalIpv4.ps1
+      - name: Verify offline package rules
+        shell: pwsh
+        run: ./tools/Test-OfflineRules.ps1
       - name: Verify synthetic recording protocol
         shell: pwsh
         env:
