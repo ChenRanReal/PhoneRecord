@@ -39,11 +39,12 @@ public:
     RecordSession(const string& id, const std::map<string, string>& params,
                   const string& codec, int port, SOCKET socket, const string& controlPeer)
         : id_(id), tag_(sessionFingerprint(id)), codec_(codec), port_(port), socket_(socket), controlPeer_(controlPeer) {
+        const PrDeviceProfile& profile = activeDeviceProfile();
         const auto field = [&](const char* key) { const auto it = params.find(key); return it == params.end() ? string() : it->second; };
-        localNumber_ = field("local_number");
-        remoteNumber_ = field("remote_number");
-        direction_ = field("dir");
-        name_ = field("remote_name");
+        localNumber_ = field(profile.ctrl_field_local);
+        remoteNumber_ = field(profile.ctrl_field_remote);
+        direction_ = field(profile.ctrl_field_direction);
+        name_ = field(profile.ctrl_field_name);
         if (name_.empty() || directoryNumber(name_) == directoryNumber(remoteNumber_)) name_ = g_directory.lookup(remoteNumber_);
     }
 
@@ -488,38 +489,44 @@ private:
 
     /// Avoid idle-dispatching a fragmented Start before its required codec field arrives.
     bool completeCandidate(const string& frame) const {
+        const PrDeviceProfile& profile = activeDeviceProfile();
         const auto values = parseKv(frame);
-        const auto cmd = values.find("cmd"), id = values.find("id");
+        const auto cmd = values.find(prText(profile.ctrl_field_cmd)), id = values.find(prText(profile.ctrl_field_id));
         if (cmd == values.end() || id == values.end() || id->second.empty()) return false;
-        if (cmd->second == "RecordStopRequest") return true;
-        const auto codec = values.find("codec");
-        return cmd->second == "RecordStartRequest" && codec != values.end() && (codec->second == "PCMA" || codec->second == "PCMU");
+        if (deviceCommandIs(profile.ctrl_stop_request, cmd->second)) return true;
+        const auto codec = values.find(prText(profile.ctrl_field_codec));
+        return deviceCommandIs(profile.ctrl_start_request, cmd->second) && codec != values.end() &&
+            (codec->second == prText(profile.ctrl_codec_pcma) || codec->second == prText(profile.ctrl_codec_pcmu));
     }
 
     /// Validate one complete request and check every byte of its response transmission.
     bool dispatch(const string& frame, SOCKET client, uint64_t cid, const string& peer) {
+        const PrDeviceProfile& profile = activeDeviceProfile();
         auto params = parseKv(frame);
-        const string cmd = params["cmd"], id = params["id"];
+        const string cmd = params[prText(profile.ctrl_field_cmd)], id = params[prText(profile.ctrl_field_id)];
         diagnosticUpdate([](DiagnosticSnapshot& state) { ++state.frames; });
         if (id.empty() || id.size() > 96 || id.find_first_of("\r\n\0&", 0, 4) != string::npos) {
             LOGW("CTRL_BAD_ID cid=%llu frame_bytes=%zu", cid, frame.size()); return true;
         }
         const string tag = sessionFingerprint(id);
+        const bool startCommand = deviceCommandIs(profile.ctrl_start_request, cmd);
+        const bool stopCommand = deviceCommandIs(profile.ctrl_stop_request, cmd);
         LOGI("CTRL_COMMAND cid=%llu command=%s session=%s frame_bytes=%zu", cid,
-             cmd == "RecordStartRequest" || cmd == "RecordStopRequest" ? cmd.c_str() : "unknown", tag.c_str(), frame.size());
+             (profile.capabilities & PR_CAP_NETWORK_RECORDING) != 0 && (startCommand || stopCommand) ? cmd.c_str() : "unknown", tag.c_str(), frame.size());
         string reply;
         bool startAccepted = false;
-        if (cmd == "RecordStartRequest") {
+        if ((profile.capabilities & PR_CAP_NETWORK_RECORDING) == 0) { LOGW("CTRL_UNKNOWN_COMMAND cid=%llu", cid); return true; }
+        if (startCommand) {
             int port = 0;
-            string codec = params["codec"];
-            const bool supported = codec == "PCMA" || codec == "PCMU";
+            string codec = params[prText(profile.ctrl_field_codec)];
+            const bool supported = codec == prText(profile.ctrl_codec_pcma) || codec == prText(profile.ctrl_codec_pcmu);
             const bool ok = supported && startSession(id, params, port, peer);
             startAccepted = ok;
             if (!supported) diagnosticStage(RecordingStage::Failed, "UNSUPPORTED_CODEC");
-            reply = "cmd=RecordStartResponse&id=" + id + (ok ? "&result=success&reason=&server=" + g_cfg.advertiseIp + "&port=" + std::to_string(port) : "&result=failed&reason=" + string(supported ? "no_port" : "unsupported_codec") + "&server=&port=0") + "\r\n";
-        } else if (cmd == "RecordStopRequest") {
+            reply = deviceControlStartReply(profile, id, ok, supported, g_cfg.advertiseIp, port);
+        } else if (stopCommand) {
             stopSession(id, "PHONE_STOP");
-            reply = "cmd=RecordStopResponse&id=" + id + "&result=success\r\n";
+            reply = deviceControlStopReply(profile, id);
         } else { LOGW("CTRL_UNKNOWN_COMMAND cid=%llu", cid); return true; }
         const ULONGLONG started = GetTickCount64();
         size_t sentBytes = 0;
@@ -549,7 +556,8 @@ private:
             BOOL exclusive = TRUE; setsockopt(udp, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<char*>(&exclusive), sizeof(exclusive));
             sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = INADDR_ANY; address.sin_port = htons(static_cast<u_short>(port));
             if (bind(udp, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) { closesocket(udp); continue; }
-            string codec = "PCMA"; const auto value = params.find("codec"); if (value != params.end() && !value->second.empty()) codec = value->second;
+            const PrDeviceProfile& profile = activeDeviceProfile();
+            string codec = prText(profile.ctrl_codec_pcma); const auto value = params.find(prText(profile.ctrl_field_codec)); if (value != params.end() && !value->second.empty()) codec = value->second;
             auto session = std::make_shared<RecordSession>(id, params, codec, port, udp, peer);
             sessions_[id] = session; usedPorts_.insert(port); ++activeCount; g_sessionCount = activeCount.load();
             diagnosticUpdate([&](DiagnosticSnapshot& state) { state.sessionTag = sessionFingerprint(id); });

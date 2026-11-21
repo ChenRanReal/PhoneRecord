@@ -153,9 +153,10 @@ static bool compatibleCallback(const string& value, const char* event) {
     if (scheme == string::npos || toLower(url.substr(0, scheme)) != "http") return false;
     const size_t path = url.find('/', scheme + 3); if (path == string::npos) return false;
     const string authority = url.substr(scheme + 3, path - scheme - 3);
+    const PrDeviceProfile& profile = activeDeviceProfile();
     const string expected = g_cfg.advertiseIp + ":" + std::to_string(g_cfg.hookPort);
     if (authority != expected && !(g_cfg.hookPort == 80 && authority == g_cfg.advertiseIp)) return false;
-    const size_t question = url.find('?', path); if (question == string::npos || url.substr(path, question - path) != "/event") return false;
+    const size_t question = url.find('?', path); if (question == string::npos || url.substr(path, question - path) != prText(profile.event_path)) return false;
     const size_t fragment = url.find('#', question);
     const string query = url.substr(question + 1, fragment == string::npos ? string::npos : fragment - question - 1);
     bool eventMatches = false; string pairing; int pairCount = 0;
@@ -163,9 +164,9 @@ static bool compatibleCallback(const string& value, const char* event) {
     while (first <= query.size()) {
         const size_t end = query.find('&', first); const string item = query.substr(first, end == string::npos ? string::npos : end - first);
         const size_t equal = item.find('=');
-        if (equal != string::npos && (item.substr(0, equal) == "ev" || item.substr(0, equal) == "event")) {
+        if (equal != string::npos && (item.substr(0, equal) == prText(profile.event_query_key) || item.substr(0, equal) == prText(profile.event_query_alias))) {
             const string type = toLower(item.substr(equal + 1));
-            eventMatches = type == event || (string(event) == "est" && type == "established") || (string(event) == "end" && type == "terminated");
+            eventMatches = prEventSame(profile, event, type.c_str());
         }
         if (equal != string::npos && item.substr(0, equal) == "pair") { pairing = item.substr(equal + 1); ++pairCount; }
         if (end == string::npos) break; first = end + 1;
