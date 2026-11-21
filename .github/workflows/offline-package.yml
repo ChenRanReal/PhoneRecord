@@ -1,0 +1,50 @@
+name: Offline package dry run
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/New-OfflinePackage.ps1'
+      - 'cpp/speech/install.ps1'
+      - 'cpp/speech/qwen-install.ps1'
+      - 'cpp/speech/worker.cjs'
+      - 'cpp/speech/qwen-worker.py'
+      - 'cpp/speech/qwen-assets.json'
+      - '.github/workflows/offline-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build native x64 desktop
+        shell: pwsh
+        run: ./tools/Build-Desktop.ps1 -Architecture x64 -OutputDirectory tmp/release-x64
+      - name: Cache offline model downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/phonerecord-model-cache
+          key: phonerecord-models-${{ hashFiles('cpp/offline_rules.hpp', 'cpp/speech/qwen-assets.json', 'cpp/speech/install.ps1', 'cpp/speech/qwen-install.ps1') }}
+      - name: Build SenseVoice and Qwen 0.6B packages without publishing
+        shell: pwsh
+        run: |
+          ./tools/New-OfflinePackage.ps1 -Variant sensevoice -Executable tmp/release-x64/PhoneRecord-x64.exe -OutputDirectory tmp/offline -CacheDirectory "$env:RUNNER_TEMP\phonerecord-model-cache" -Publish
+          ./tools/New-OfflinePackage.ps1 -Variant qwen06 -Executable tmp/release-x64/PhoneRecord-x64.exe -OutputDirectory tmp/offline -CacheDirectory "$env:RUNNER_TEMP\phonerecord-model-cache" -Publish
+          $sense = Get-Item -LiteralPath 'tmp/offline/PhoneRecord-x64-offline-sensevoice.zip'
+          if ($sense.Length -le 0) { throw 'SenseVoice zip is empty.' }
+          Write-Output ("SenseVoice zip bytes: " + $sense.Length)
+          $qwenZip = 'tmp/offline/PhoneRecord-x64-offline-qwen06.zip'
+          $qwenSkip = 'tmp/offline/PhoneRecord-x64-offline-qwen06.skipped.txt'
+          if (Test-Path -LiteralPath $qwenZip) {
+            $qwen = Get-Item -LiteralPath $qwenZip
+            if ($qwen.Length -le 0) { throw 'Qwen 0.6B zip is empty.' }
+            Write-Output ("Qwen 0.6B zip bytes: " + $qwen.Length)
+          } elseif (Test-Path -LiteralPath $qwenSkip) {
+            Write-Output ("Qwen 0.6B skipped: " + [IO.File]::ReadAllText($qwenSkip))
+          } else {
+            throw 'Qwen 0.6B produced neither a zip nor a skip file.'
+          }

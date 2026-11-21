@@ -5,6 +5,9 @@ Build one offline x64 installer zip. Model bytes are downloaded into the cache, 
 sensevoice and qwen06 may be published when the finished zip is under the GitHub 2 GiB asset limit.
 qwen17 weights alone exceed that limit, so -Publish writes a skip file and does not upload them.
 The zip contains the already built executable, install-variant.txt, licenses and bundled-speech.
+SenseVoice's install.ps1 runs worker.cjs from the install root. Qwen's installer
+resolves install.ps1, qwen-assets.json and qwen-worker.py beside itself. Those
+files are copied into the temporary root before either script runs.
 #>
 [CmdletBinding()]
 param(
@@ -16,6 +19,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+function Copy-SpeechInstallerFile([string]$Name, [string]$DestinationDirectory) {
+    $source = Join-Path (Join-Path $root 'cpp\speech') $Name
+    if (-not [IO.File]::Exists($source)) { throw "Missing speech file required by the offline installer: $Name" }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationDirectory $Name) -Force
+}
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $root 'tmp\offline' }
 if (-not $CacheDirectory) { $CacheDirectory = Join-Path $root 'tmp\model-cache' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
@@ -81,10 +89,12 @@ if (-not (Test-Ready $build)) {
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $progress = Join-Path $CacheDirectory "$Variant-progress.json"
     if ($Variant -eq 'sensevoice') {
+        Copy-SpeechInstallerFile 'worker.cjs' $build
         & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'cpp\speech\install.ps1') -Root $build -ProgressFile $progress -Source huggingface.co
     } else {
+        foreach ($name in @('install.ps1','qwen-install.ps1','qwen-assets.json','qwen-worker.py')) { Copy-SpeechInstallerFile $name $build }
         $qwenVariant = if ($Variant -eq 'qwen17') { '1.7B' } else { '0.6B' }
-        & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'cpp\speech\qwen-install.ps1') -Root $build -ProgressFile $progress -Source huggingface.co -Variant $qwenVariant
+        & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $build 'qwen-install.ps1') -Root $build -ProgressFile $progress -Source huggingface.co -Variant $qwenVariant
     }
     if ($LASTEXITCODE -ne 0) {
         $errorFile = Join-Path $build 'install-error.json'
