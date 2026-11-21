@@ -31,6 +31,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     HANDLE updateAck = NULL;
     wchar_t executable[32768]{}; GetModuleFileNameW(NULL, executable, static_cast<DWORD>(std::size(executable)));
     wstring folder(executable); folder = folder.substr(0, folder.find_last_of(L"\\/"));
+    const wstring exeFolder = folder;
     wstring config = folder + L"\\config.ini", exportPath, analysePath, setupReport, setupRestore, setupScript;
     string setupAction, setupPlan;
     bool headless = false, stopExisting = false, startup = false;
@@ -92,6 +93,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) { if (stopSignal) CloseHandle(stopSignal); CloseHandle(singleton); return 2; }
     const bool exists = GetFileAttributesW(g_configPath.c_str()) != INVALID_FILE_ATTRIBUTES;
     g_cfg.load(wideToUtf8(g_configPath));
+    const DeviceModelSelection modelSelection = deviceModelsStartup(wideToUtf8(exeFolder + L"\\plugins"), g_cfg.deviceModel);
+    LOGI("DEVICE_MODEL_SELECTED id=%s reason=%s score=%d plugins=%d", modelSelection.id.c_str(), modelSelection.reason.c_str(), modelSelection.score, modelSelection.loaded);
+    for (const auto& failure : deviceModels().failures()) LOGW("DEVICE_MODEL_PLUGIN_SKIPPED %s", failure.c_str());
     initializePhoneAddress();
     g_healthIntervalSec = g_cfg.healthIntervalSec;
     g_trayNotifications = g_cfg.trayNotifications != 0;

@@ -278,11 +278,15 @@ static void hookHandler(HttpRequest& request, HttpResponse& response) {
             + ",\"local_code\":" + jsonQuoted(state.localHealth.code) + ",\"phone_code\":" + jsonQuoted(state.phoneHealth.code) + "}";
         return;
     }
-    if (request.path != "/event" || request.method != "GET") { response.status = 404; response.body = "not found"; return; }
-    const string event = toLower(request.query["ev"].empty() ? request.query["event"] : request.query["ev"]);
-    const bool start = event == "est" || event == "established";
-    const bool stop = event == "end" || event == "terminated";
-    const bool tracking = event == "ready" || event == "ip";
+    const PrDeviceProfile& profile = activeDeviceProfile();
+    if ((profile.capabilities & PR_CAP_EVENT_INGESTION) == 0 || request.path != prText(profile.event_path) || request.method != "GET") { response.status = 404; response.body = "not found"; return; }
+    const string primary = request.query[prText(profile.event_query_key)];
+    const string alias = prText(profile.event_query_alias)[0] ? request.query[prText(profile.event_query_alias)] : "";
+    const string event = toLower(primary.empty() ? alias : primary);
+    const int kind = activeClassifyEvent(event.c_str());
+    const bool start = kind == PR_EVENT_ESTABLISHED;
+    const bool stop = kind == PR_EVENT_TERMINATED;
+    const bool tracking = kind == PR_EVENT_READY || kind == PR_EVENT_ADDRESS;
     if (!start && !stop && !tracking) { response.status = 400; response.body = "unknown event"; LOGW("EVENT_UNKNOWN_TYPE"); return; }
     std::shared_ptr<PendingCallEvent> admission;
     {
@@ -357,8 +361,9 @@ static bool saveConfiguration(const Config& config) {
     const wstring pending = g_configPath + L".pending";
     std::ofstream output(pending, std::ios::binary | std::ios::trunc);
     output << "# PhoneRecord 2 configuration - restart to apply\n"
-           << "phone_address_mode=" << config.phoneAddressMode << "\nphone_mac=" << config.phoneMac << "\nphone_ip=" << config.phoneIp << "\nphone_port=" << config.phonePort
-           << "\nphone_user=" << config.phoneUser << "\nphone_pass_dpapi=" << encrypted
+           << "phone_address_mode=" << config.phoneAddressMode << "\nphone_mac=" << config.phoneMac << "\nphone_ip=" << config.phoneIp << "\nphone_port=" << config.phonePort;
+    if (!config.deviceModel.empty()) output << "\ndevice_model=" << config.deviceModel;
+    output << "\nphone_user=" << config.phoneUser << "\nphone_pass_dpapi=" << encrypted
            << "\nadvertise_ip=" << config.advertiseIp << "\ncontrol_port=" << config.controlPort
            << "\nhook_port=" << config.hookPort << "\nui_port=" << config.uiPort
            << "\nudp_port_start=" << config.udpPortStart << "\nudp_port_end=" << config.udpPortEnd

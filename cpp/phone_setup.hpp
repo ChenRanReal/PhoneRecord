@@ -126,8 +126,10 @@ static bool setupSame(const std::map<string, string>& left, const std::map<strin
 
 /// Retarget an empty or recognized recording callback; refuse unrelated company actions.
 static bool setupCallback(const string& original, const char* event, string& target) {
-    const string base = "http://" + g_cfg.advertiseIp + ":" + std::to_string(g_cfg.hookPort);
-    if (trim(original).empty()) { target = base + "/event?ev=" + event; if (g_cfg.phoneAddressMode == "dhcp") target += "&pair=" + phonePairingToken(); return true; }
+    const PrDeviceProfile& profile = activeDeviceProfile();
+    const int kind = prClassifyToken(profile, event);
+    const string pairingToken = g_cfg.phoneAddressMode == "dhcp" ? phonePairingToken() : "";
+    if (trim(original).empty()) { target = deviceEventTarget(profile, g_cfg.advertiseIp, g_cfg.hookPort, kind, pairingToken); return true; }
     const string source = trim(original); const size_t slash = source.find('/', 7);
     if (toLower(source.substr(0, 7)) != "http://" || slash == string::npos) return false;
     const string authority = source.substr(7, slash - 7); const size_t colon = authority.find(':');
@@ -136,24 +138,24 @@ static bool setupCallback(const string& original, const char* event, string& tar
     if (!validIpv4(host) || port < 1 || port > 65535 || source.find('#') != string::npos) return false;
     // Match only the recording event contract; retain all existing macro parameters.
     const string suffix = source.substr(slash);
-    if (suffix.compare(0, 7, "/event?") != 0) return false;
-    bool matches = false; size_t first = 7; string retained;
+    const string eventPrefix = string(prText(profile.event_path)) + "?";
+    if (suffix.compare(0, eventPrefix.size(), eventPrefix) != 0) return false;
+    bool matches = false; size_t first = eventPrefix.size(); string retained;
     while (first < suffix.size()) {
         const size_t end = suffix.find('&', first); const string pair = suffix.substr(first, end == string::npos ? string::npos : end - first);
         const size_t equal = pair.find('=');
-        if (equal != string::npos && (pair.substr(0, equal) == "ev" || pair.substr(0, equal) == "event")) {
+        if (equal != string::npos && (pair.substr(0, equal) == prText(profile.event_query_key) || pair.substr(0, equal) == prText(profile.event_query_alias))) {
             const string value = toLower(pair.substr(equal + 1));
-            const bool correct = value == event || (string(event) == "est" && value == "established") || (string(event) == "end" && value == "terminated");
+            const bool correct = prEventSame(profile, event, value.c_str());
             if (!correct || matches) return false; matches = true;
         }
         const string key = equal == string::npos ? pair : pair.substr(0, equal);
-        if (key != "pair" && key != "ev" && key != "event") { if (!retained.empty()) retained += '&'; retained += pair; }
+        if (key != "pair" && key != prText(profile.event_query_key) && key != prText(profile.event_query_alias)) { if (!retained.empty()) retained += '&'; retained += pair; }
         if (end == string::npos) break; first = end + 1;
     }
     if (!matches) return false;
     // Keep the event and pairing token ahead of phone macros so a short action URL still authorizes.
-    target = base + "/event?ev=" + event;
-    if (g_cfg.phoneAddressMode == "dhcp") target += "&pair=" + phonePairingToken();
+    target = deviceEventTarget(profile, g_cfg.advertiseIp, g_cfg.hookPort, kind, pairingToken);
     if (!retained.empty()) target += "&" + retained;
     return true;
 }
@@ -162,9 +164,10 @@ static bool setupCallback(const string& original, const char* event, string& tar
 static string setupSaveBackup(const SetupForm& record, const SetupForm& actions) {
     const string folder = "phone-setup-backups";
     if (!ensureDir(folder)) return "";
+    const PrDeviceProfile& profile = activeDeviceProfile();
     const string data = "PhoneRecordSetup1\n" + phoneAddress() + ":" + std::to_string(g_cfg.phonePort) + "\n" +
-        setupEncode(record.values) + "\n" + setupSubmission(record, "/record.htm") + "\n" +
-        setupEncode(actions.values) + "\n" + setupSubmission(actions, "/action.htm") + "\n";
+        setupEncode(record.values) + "\n" + setupSubmission(record, profile.record_page) + "\n" +
+        setupEncode(actions.values) + "\n" + setupSubmission(actions, profile.action_page) + "\n";
     string encrypted; if (!protectLocalSecret(data, encrypted)) return "";
     const string name = folder + "\\setup-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + ".dpapi";
     HANDLE file = CreateFileW(utf8ToWide(name).c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);

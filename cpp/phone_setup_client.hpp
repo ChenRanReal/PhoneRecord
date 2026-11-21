@@ -9,17 +9,19 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
         LOGI("PHONE_SETUP_RESULT code=%s changes=%zu applied=%d rollback=%d restored=%d", code, result.changes.size(), result.applied, result.rollbackAttempted, result.rollbackVerified);
         return result;
     };
+    const PrDeviceProfile& profile = activeDeviceProfile();
+    if ((profile.capabilities & PR_CAP_AUTO_SETUP) == 0 || std::strcmp(prText(profile.auth_scheme), "fanvil-nonce-md5") != 0) return finish("SETUP_UNSUPPORTED");
     if (g_offline) return finish("SETUP_OFFLINE");
     if (!g_cfg.errors().empty() || g_cfg.hookPort == 0) return finish("SETUP_CONFIG_INVALID");
     if (diagnosticSnapshot().callActive || g_sessionCount > 0) return finish("SETUP_PHONE_BUSY");
     string head, body; SetupForm beforeRecord, beforeActions; bool supportedOptions = false;
     const auto read = [&](SetupForm& record, SetupForm& actions) {
-        if (!request("GET", "/record.htm", "", head, body, true) || !protectedPage(head, body)) return false;
+        if (!request("GET", profile.record_page, "", head, body, true) || !protectedPage(head, body)) return false;
         std::smatch status;
-        if (!std::regex_search(body, status, std::regex("recordStatus\\s*=\\s*\"\\s*(\\d+)")) || status[1] != "4") return false;
+        if (!profile.record_status_regex[0] || !std::regex_search(body, status, std::regex(profile.record_status_regex)) || status[1].str() != std::to_string(profile.ready_state)) return false;
         record = setupReadForm(body);
-        supportedOptions = setupHasOption(body, "CSE_RecordType_RW", "1") && setupHasOption(body, "CSE_RecordVoiceCodec_R", "PCMA");
-        if (!request("GET", "/action.htm", "", head, body, true) || head.find("200") == string::npos || loginPage(body)) return false;
+        supportedOptions = setupHasOption(body, profile.field_type, profile.value_network) && setupHasOption(body, profile.field_codec, profile.value_codec_pcma);
+        if (!request("GET", profile.action_page, "", head, body, true) || head.find("200") == string::npos || loginPage(body)) return false;
         actions = setupReadForm(body); return true;
     };
     const auto post = [&](const string& path, const string& payload) {
@@ -32,13 +34,13 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
         return ok;
     };
     if (!read(beforeRecord, beforeActions)) return finish("SETUP_PHONE_UNAVAILABLE_OR_BUSY");
-    for (const char* key : {"EnableRecord_RW", "CSE_RecordType_RW", "CSE_RecordVoiceCodec_R", "SYS_RecordAddr_RW", "SYS_RecordPort_RW", "CheckBoxManager"})
-        if (!beforeRecord.values.count(key)) return finish("SETUP_UNSUPPORTED");
-    if (!beforeRecord.checkboxes.count("EnableRecord_RW")) return finish("SETUP_UNSUPPORTED");
-    if (beforeRecord.values.count("DefaultRecord")) return finish("SETUP_UNSUPPORTED");
+    for (const char* key : {profile.field_enable, profile.field_type, profile.field_codec, profile.field_address, profile.field_port, profile.field_checkbox_manager})
+        if (!key[0] || !beforeRecord.values.count(key)) return finish("SETUP_UNSUPPORTED");
+    if (!beforeRecord.checkboxes.count(profile.field_enable)) return finish("SETUP_UNSUPPORTED");
+    if (profile.field_default_record[0] && beforeRecord.values.count(profile.field_default_record)) return finish("SETUP_UNSUPPORTED");
     if (!supportedOptions) return finish("SETUP_UNSUPPORTED");
-    for (const char* key : {"AURL_CallEstablished_RW", "AURL_CallTerminated_RW"})
-        if (!beforeActions.values.count(key)) return finish("SETUP_UNSUPPORTED");
+    for (const char* key : {profile.field_established, profile.field_terminated})
+        if (!key[0] || !beforeActions.values.count(key)) return finish("SETUP_UNSUPPORTED");
 
     if (!restorePath.empty()) {
         std::ifstream input(utf8ToWide(restorePath), std::ios::binary); string encoded, plain;
@@ -54,7 +56,7 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
         if (!setupDecode(recordMap, recordExpected) || !setupDecode(actionMap, actionExpected)) return finish("SETUP_BACKUP_INVALID");
         result.backup = setupSaveBackup(beforeRecord, beforeActions);
         if (result.backup.empty()) return finish("SETUP_BACKUP_FAILED");
-        const bool actionOk = post("/action.htm", actionPost), recordOk = post("/record.htm", recordPost);
+        const bool actionOk = post(profile.action_page, actionPost), recordOk = post(profile.record_page, recordPost);
         SetupForm record, actions;
         if (read(record, actions) && setupSame(recordExpected, record.values) && setupSame(actionExpected, actions.values)) { result.applied = true; result.cause.clear(); if (!completePhonePairing(false)) return finish("SETUP_PAIRING_SAVE_FAILED"); return finish("SETUP_RESTORED", true); }
         LOGW("PHONE_SETUP_RESTORE_FAILED record_ack=%d action_ack=%d", recordOk, actionOk);
@@ -63,16 +65,16 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
 
     if (!ensurePhonePairingToken()) return finish("SETUP_PAIRING_SAVE_FAILED");
     SetupForm afterRecord = beforeRecord, afterActions = beforeActions;
-    afterRecord.values["EnableRecord_RW"] = "1"; afterRecord.values["CSE_RecordType_RW"] = "1";
-    const string codec = toLower(beforeRecord.values["CSE_RecordVoiceCodec_R"]);
-    afterRecord.values["CSE_RecordVoiceCodec_R"] = codec == "pcmu" ? "PCMU" : "PCMA";
-    afterRecord.values["SYS_RecordAddr_RW"] = g_cfg.advertiseIp;
-    afterRecord.values["SYS_RecordPort_RW"] = std::to_string(g_cfg.controlPort);
-    std::vector<std::pair<string, string>> callbacks{{"AURL_CallEstablished_RW", "est"}, {"AURL_CallTerminated_RW", "end"}};
+    afterRecord.values[profile.field_enable] = profile.value_enabled; afterRecord.values[profile.field_type] = profile.value_network;
+    const string codec = toLower(beforeRecord.values[profile.field_codec]);
+    afterRecord.values[profile.field_codec] = codec == toLower(profile.value_codec_pcmu) ? profile.value_codec_pcmu : profile.value_codec_pcma;
+    afterRecord.values[profile.field_address] = g_cfg.advertiseIp;
+    afterRecord.values[profile.field_port] = std::to_string(g_cfg.controlPort);
+    std::vector<std::pair<string, string>> callbacks{{profile.field_established, prCanonicalToken(profile, PR_EVENT_ESTABLISHED)}, {profile.field_terminated, prCanonicalToken(profile, PR_EVENT_TERMINATED)}};
     // Startup and IP-change URLs are optional. Empty or already-owned values can be written;
     // an existing foreign URL stays in place so one-click setup can still pair the call events.
     if (g_cfg.phoneAddressMode == "dhcp") {
-        const std::pair<const char*, const char*> optionalCallbacks[] = {{"AURL_SetupCompleted_RW", "ready"}, {"AURL_IpChange_RW", "ip"}};
+        const std::pair<const char*, const char*> optionalCallbacks[] = {{profile.field_setup_completed, prCanonicalToken(profile, PR_EVENT_READY)}, {profile.field_ip_change, prCanonicalToken(profile, PR_EVENT_ADDRESS)}};
         for (const auto& extra : optionalCallbacks) {
             const auto existing = beforeActions.values.find(extra.first);
             string target;
@@ -96,8 +98,8 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
     const bool recordChange = !setupSame(beforeRecord.values, afterRecord.values), actionChange = !setupSame(beforeActions.values, afterActions.values);
     bool recordTouched = false, actionTouched = false;
     bool sent = true;
-    if (recordChange) { recordTouched = true; sent = post("/record.htm", setupSubmission(afterRecord, "/record.htm")); }
-    if (sent && actionChange) { actionTouched = true; sent = post("/action.htm", setupSubmission(afterActions, "/action.htm")); }
+    if (recordChange) { recordTouched = true; sent = post(profile.record_page, setupSubmission(afterRecord, profile.record_page)); }
+    if (sent && actionChange) { actionTouched = true; sent = post(profile.action_page, setupSubmission(afterActions, profile.action_page)); }
     SetupForm record, actions;
     if (sent && read(record, actions) && setupSame(afterRecord.values, record.values) && setupSame(afterActions.values, actions.values)) {
         result.applied = true; if (!completePhonePairing(true)) return finish("SETUP_PAIRING_SAVE_FAILED"); return finish("SETUP_VERIFIED", true);
@@ -106,8 +108,8 @@ PhoneSetupResult PhoneClient::configurePhone(bool apply, const string& expectedP
     if (result.cause.empty()) result.cause = "SETUP_READBACK_FAILED";
     LOGW("PHONE_SETUP_ROLLBACK_BEGIN record=%d action=%d", recordTouched, actionTouched);
     if (recordState(true) != 4) return finish("SETUP_FAILED_RESTORE_REQUIRED");
-    if (actionTouched) post("/action.htm", setupSubmission(beforeActions, "/action.htm"));
-    if (recordTouched) post("/record.htm", setupSubmission(beforeRecord, "/record.htm"));
+    if (actionTouched) post(profile.action_page, setupSubmission(beforeActions, profile.action_page));
+    if (recordTouched) post(profile.record_page, setupSubmission(beforeRecord, profile.record_page));
     result.rollbackVerified = read(record, actions) && setupSame(beforeRecord.values, record.values) && setupSame(beforeActions.values, actions.values);
     return finish(result.rollbackVerified ? "SETUP_FAILED_RESTORED" : "SETUP_FAILED_RESTORE_REQUIRED");
 }

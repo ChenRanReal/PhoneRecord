@@ -1,4 +1,4 @@
-// PhoneRecord 2 - Fanvil X3S 原生 C++ 通话录音工具
+// PhoneRecord 2 - 原生 C++ 通话录音工具。已验证话机合同在 Fanvil X3S 组件中。
 //
 // 构建入口：cpp/build.bat (x86) / cpp/build-x64.bat。静态链接 CRT，原生 Windows 界面。
 // TCP 控制、UDP 媒体、HTTP 事件均有独立诊断证据；控制会话不等于音频成功。
@@ -128,6 +128,9 @@ static string toLower(string s) {
     for (auto& c : s) c = (char)tolower((unsigned char)c);
     return s;
 }
+
+#include "device_model.hpp"
+#include "device_model_load.hpp"
 
 static bool fileExists(const string& path) {
     DWORD attr = GetFileAttributesW(utf8ToWide(path).c_str());
@@ -262,6 +265,8 @@ struct Config {
     /// Required stable Ethernet identity for same-subnet DHCP discovery.
     string phoneMac;
     int    phonePort = 80;
+    /// Optional component id. Empty keeps automatic matching and the Fanvil X3S fallback.
+    string deviceModel;
     string phoneUser = "";
     string phonePass = "";
     string recordDir = "recordings";
@@ -309,6 +314,7 @@ struct Config {
             else if (key == "phone_mac") phoneMac = val;
             else if (key == "phone_ip")       phoneIp = val;
             else if (key == "phone_port")     phonePort = configurationInteger(val);
+            else if (key == "device_model")   deviceModel = val;
             else if (key == "phone_user")     phoneUser = val;
             else if (key == "phone_pass")     phonePass = val;
             else if (key == "phone_pass_dpapi") secretError = !unprotectLocalSecret(val, phonePass);
@@ -331,6 +337,7 @@ struct Config {
         if (phoneMac.find_first_of("\r\n") != string::npos) result.push_back("phone_mac");
         if (!validIpv4(advertiseIp)) result.push_back("advertise_ip");
         if (phonePort < 1 || phonePort > 65535) result.push_back("phone_port");
+        if (!deviceModel.empty() && !deviceModelIdAllowed(deviceModel)) result.push_back("device_model");
         if (controlPort < 1 || controlPort > 65535) result.push_back("control_port");
         if (phoneAddressMode == "dhcp" && hookPort == 0) result.push_back("hook_port");
         if (hookPort < 0 || hookPort > 65535 || hookPort == controlPort) result.push_back("hook_port");

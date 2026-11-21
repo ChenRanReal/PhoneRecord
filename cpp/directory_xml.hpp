@@ -28,7 +28,15 @@ struct DirectoryBstr {
     DirectoryBstr& operator=(const DirectoryBstr&) = delete;
 };
 
-/// Parse the existing Fanvil contact/calllog schema; reject HTML, malformed XML and DTDs.
+/// Widen an ASCII query or element name for the XML parser.
+static wstring directoryWide(const char* text) {
+    wstring value;
+    if (!text) return value;
+    for (const unsigned char* cursor = reinterpret_cast<const unsigned char*>(text); *cursor; ++cursor) value += static_cast<wchar_t>(*cursor);
+    return value;
+}
+
+/// Parse the active device model's contact/calllog schema; reject HTML, malformed XML and DTDs.
 static bool parseDirectoryXml(const string& body, bool history, std::map<string, string>& names) {
     if (body.empty() || body.size() > 4 * 1024 * 1024) return false;
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -56,12 +64,18 @@ static bool parseDirectoryXml(const string& body, bool history, std::map<string,
     if (FAILED(document->get_documentElement(&root)) || !root || FAILED(root->get_nodeName(&rootName.value))) return false;
     const wstring tag = rootName.value ? rootName.value : L"";
     if (tag == L"html" || tag == L"HTML") return false;
-    DirectoryBstr query(history ? L"//record" : L"//contact");
+    const PrDeviceProfile& profile = activeDeviceProfile();
+    DirectoryBstr query(directoryWide(history ? profile.directory_history_query : profile.directory_contact_query));
     Microsoft::WRL::ComPtr<IXMLDOMNodeList> entries;
     if (FAILED(document->selectNodes(query.value, &entries)) || !entries) return false;
     long count = 0; entries->get_length(&count);
     if (count > 20000) return false;
-    if (!count && tag != L"contacts" && tag != L"phonebook" && tag != L"calllog" && tag != L"records" && tag != L"PhoneBook" && tag != L"CallLog") return false;
+    if (!count) {
+        bool knownRoot = false;
+        const string root = wideToUtf8(tag);
+        for (const char* const* name = profile.directory_roots; name && *name; ++name) if (root == *name) knownRoot = true;
+        if (!knownRoot) return false;
+    }
     std::map<string, string> parsed;
     for (long index = 0; index < count; ++index) {
         Microsoft::WRL::ComPtr<IXMLDOMNode> entry;
@@ -73,11 +87,12 @@ static bool parseDirectoryXml(const string& body, bool history, std::map<string,
             if (FAILED(entry->selectSingleNode(path.value, &node)) || !node || FAILED(node->get_text(&value.value))) return string();
             return trim(wideToUtf8(value.value ? value.value : L""));
         };
-        const string name = text(L"name");
+        const wstring nameField = directoryWide(profile.directory_name_field);
+        const string name = text(nameField.c_str());
         if (name.empty() || name.size() > 1024 || name.find_first_of("\r\n") != string::npos) continue;
-        for (const wchar_t* field : {L"tel1", L"tel2", L"tel3", L"num"}) {
-            if (history != (wcscmp(field, L"num") == 0)) continue;
-            const string number = directoryNumber(text(field));
+        for (const char* const* field = history ? profile.directory_history_numbers : profile.directory_contact_numbers; field && *field; ++field) {
+            const wstring numberField = directoryWide(*field);
+            const string number = directoryNumber(text(numberField.c_str()));
             if (!number.empty() && number.size() <= 128 && number.find_first_of("\r\n\t") == string::npos && number != name) parsed.emplace(number, name);
         }
     }
