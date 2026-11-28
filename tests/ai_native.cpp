@@ -60,5 +60,101 @@ int wmain(int argc,wchar_t** argv) {
         const ULONGLONG started=GetTickCount64();while(service.state().busy && GetTickCount64()-started<70000)Sleep(30);
         const auto observed=service.state();printf("CODEBUDDY_SYNTHETIC status=%s exit=%s\n",observed.step.c_str(),observed.code.c_str());
     }
-    service.stop();restored.stop();puts("AI_NATIVE_OK profiles binding dual_sources context_containment preview stdio failure output_limit cancel no_automatic_resend");
+    string endpoint, endpointError;
+    assert(aiApiEndpoint("openai-chat","https://api.openai.com/v1",endpoint,endpointError) && endpoint=="https://api.openai.com/v1/chat/completions");
+    assert(aiApiEndpoint("openai-chat","https://api.openai.com/v1/",endpoint,endpointError) && endpoint=="https://api.openai.com/v1/chat/completions");
+    assert(aiApiEndpoint("openai-chat","https://api.openai.com",endpoint,endpointError) && endpoint=="https://api.openai.com/v1/chat/completions");
+    assert(aiApiEndpoint("openai-chat","https://api.groq.com/openai/v1",endpoint,endpointError) && endpoint=="https://api.groq.com/openai/v1/chat/completions");
+    assert(aiApiEndpoint("openai-chat","https://api.openai.com/v1/chat/completions",endpoint,endpointError) && endpoint=="https://api.openai.com/v1/chat/completions");
+    assert(aiApiEndpoint("openai-responses","https://api.openai.com/v1",endpoint,endpointError) && endpoint=="https://api.openai.com/v1/responses");
+    assert(aiApiEndpoint("anthropic","https://api.anthropic.com",endpoint,endpointError) && endpoint=="https://api.anthropic.com/v1/messages");
+    assert(aiApiEndpoint("anthropic","https://api.anthropic.com/v1",endpoint,endpointError) && endpoint=="https://api.anthropic.com/v1/messages");
+    assert(aiApiEndpoint("anthropic","https://api.minimaxi.com/anthropic",endpoint,endpointError) && endpoint=="https://api.minimaxi.com/anthropic/v1/messages");
+    assert(aiApiEndpoint("openai-chat","https://example.openai.azure.com/openai/deployments/gpt/chat/completions?api-version=2024-10-21",endpoint,endpointError) && endpoint.find("api-version=2024-10-21")!=string::npos && aiApiEnds(endpoint.substr(0,endpoint.find('?')),"/chat/completions"));
+    assert(aiApiEndpoint("openai-chat","http://127.0.0.1:11434/v1",endpoint,endpointError) && endpoint=="http://127.0.0.1:11434/v1/chat/completions");
+    assert(aiApiEndpoint("openai-chat","http://localhost:11434/v1",endpoint,endpointError) && endpoint=="http://localhost:11434/v1/chat/completions");
+    assert(aiApiEndpoint("openai-chat","http://[::1]:11434/v1",endpoint,endpointError) && endpoint=="http://[::1]:11434/v1/chat/completions");
+    assert(!aiApiEndpoint("openai-chat","http://example.com/v1",endpoint,endpointError));
+    assert(!aiApiEndpoint("openai-chat","https://user:pass@api.openai.com/v1",endpoint,endpointError));
+    assert(!aiApiEndpoint("openai-chat","https://api.openai.com/v1?api_key=secret",endpoint,endpointError));
+    const string chatBody=aiApiRequestBody("openai-chat","unit-model","hello");
+    assert(chatBody.find("\"messages\"")!=string::npos && chatBody.find("unit-model")!=string::npos);
+    assert(aiApiRequestBody("openai-responses","unit-model","hello").find("\"input\"")!=string::npos);
+    assert(aiApiRequestBody("anthropic","unit-model","hello").find("\"max_tokens\":8192")!=string::npos);
+    string extracted;
+    assert(aiApiExtract("openai-chat","{\"choices\":[{\"message\":{\"content\":\"line\\nPHONERECORD_AI_OK\"}}]}",extracted) && extracted=="line\nPHONERECORD_AI_OK");
+    assert(aiApiExtract("openai-chat","{\"choices\":[{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"PHONERECORD_AI_OK\"}]}}]}",extracted) && extracted=="PHONERECORD_AI_OK");
+    assert(aiApiExtract("openai-responses","{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"PHONERECORD_AI_OK\"}]}]}",extracted) && extracted=="PHONERECORD_AI_OK");
+    assert(aiApiExtract("anthropic","{\"content\":[{\"type\":\"thinking\",\"thinking\":\"thinking-secret\"},{\"type\":\"text\",\"text\":\"PHONERECORD_AI_OK\"}]}",extracted) && extracted=="PHONERECORD_AI_OK");
+    const string apiKey="sk-test-Phonerecord-Key-9f3a";
+    AiProfile leaked; leaked.secret=apiKey; leaked.name="hidden"; assert(AiAnalysis::encode(leaked).find(apiKey)==string::npos);
+    const size_t beforeApi=service.profiles().size();
+    AiProfile rejected; rejected.kind="api"; rejected.name="拒絕"; rejected.type="openai-chat"; rejected.model="unit-model"; rejected.timeout=30; rejected.path="http://example.com/v1";
+    assert(!service.save(rejected)); rejected.path="https://user:pass@api.openai.com/v1"; assert(!service.save(rejected));
+    rejected.path="https://api.openai.com/v1?api_key=secret"; assert(!service.save(rejected)); rejected.model="bad model"; rejected.path="https://api.openai.com/v1"; assert(!service.save(rejected));
+    assert(service.profiles().size()==beforeApi);
+    WSADATA sockets{}; assert(WSAStartup(MAKEWORD(2,2),&sockets)==0);
+    SOCKET listener=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP); assert(listener!=INVALID_SOCKET);
+    sockaddr_in address{}; address.sin_family=AF_INET; address.sin_addr.s_addr=htonl(INADDR_LOOPBACK); address.sin_port=0;
+    assert(bind(listener,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0 && listen(listener,4)==0);
+    sockaddr_in bound{}; int boundLength=sizeof(bound); assert(getsockname(listener,reinterpret_cast<sockaddr*>(&bound),&boundLength)==0);
+    const string port=std::to_string(ntohs(bound.sin_port));
+    std::atomic<bool> stopServer{false}; std::mutex serverLock; std::vector<string> seenHeaders, seenBodies;
+    std::thread server([&]{
+        while(!stopServer.load()) {
+            fd_set ready; FD_ZERO(&ready); FD_SET(listener,&ready); timeval wait{0,200000};
+            if(select(0,&ready,NULL,NULL,&wait)<=0) continue;
+            SOCKET client=accept(listener,NULL,NULL); if(client==INVALID_SOCKET) continue;
+            string request; char buffer[4096];
+            while(request.find("\r\n\r\n")==string::npos && request.size()<1024*1024) {const int count=recv(client,buffer,sizeof(buffer),0); if(count<=0) break; request.append(buffer,count);}
+            size_t length=0; const size_t marker=request.find("Content-Length:");
+            if(marker!=string::npos) length=strtoul(request.c_str()+marker+15,NULL,10);
+            const size_t headerEnd=request.find("\r\n\r\n");
+            if(headerEnd!=string::npos) while(request.size()<headerEnd+4+length && request.size()<2*1024*1024) {const int count=recv(client,buffer,sizeof(buffer),0); if(count<=0) break; request.append(buffer,count);}
+            const size_t split=request.find("\r\n\r\n");
+            string header=split==string::npos?request:request.substr(0,split), body=split==string::npos?"":request.substr(split+4);
+            {std::lock_guard<std::mutex> lock(serverLock); seenHeaders.push_back(header); seenBodies.push_back(body);}
+            string lower=header; for(char& ch:lower) if(ch>='A'&&ch<='Z') ch=static_cast<char>(ch+32);
+            string payload="{\"error\":{\"message\":\"missing\"}}"; int status=404;
+            if(lower.find("get ")==0 && lower.find("/models ")!=string::npos) {status=200; payload="{\"data\":[{\"id\":\"unit-a\"},{\"id\":\"unit-b\"}]}";}
+            else if(lower.find("reject-me-key-value")!=string::npos) {status=401; payload="{\"error\":{\"message\":\"rejected reject-me-key-value\"}}";}
+            else if(lower.find("/chat/completions ")!=string::npos) {status=200; payload="{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"PHONERECORD_AI_OK\"}}]}";}
+            else if(lower.find("/responses ")!=string::npos) {status=200; payload="{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"PHONERECORD_AI_OK\"}]}]}";}
+            else if(lower.find("/messages ")!=string::npos) {status=200; payload="{\"content\":[{\"type\":\"thinking\",\"thinking\":\"thinking-secret\"},{\"type\":\"text\",\"text\":\"PHONERECORD_AI_OK\"}]}";}
+            const string statusText=status==200?"OK":status==401?"Unauthorized":"Not Found";
+            const string response="HTTP/1.1 "+std::to_string(status)+" "+statusText+"\r\nContent-Type: application/json\r\nContent-Length: "+std::to_string(payload.size())+"\r\nConnection: close\r\n\r\n"+payload;
+            send(client,response.data(),static_cast<int>(response.size()),0); closesocket(client);
+        }
+    });
+    AiProfile api; api.kind="api"; api.name="本地接口"; api.type="openai-chat"; api.path="http://127.0.0.1:"+port+"/v1"; api.model="unit-model"; api.timeout=10; api.secret=apiKey;
+    assert(service.save(api));
+    string apiId; for(const auto& profile:service.profiles()) if(profile.kind=="api" && profile.name=="本地接口") apiId=profile.id;
+    assert(!apiId.empty());
+    const string secretFile=SpeechService::read(config+L".ai-profiles.secrets",1024*1024);
+    assert(secretFile.find("dpapi:")!=string::npos && secretFile.find(apiKey)==string::npos);
+    AiAnalysis apiService; apiService.start(config);
+    AiRequest call; call.test=true; call.cli=*apiService.find(apiId); assert(call.cli.secret.empty() && apiService.hasSecret(apiId));
+    assert(apiService.run(call)); assert(completed(apiService).step=="complete");
+    {std::lock_guard<std::mutex> lock(serverLock); bool authed=false, bodyOk=false; for(size_t i=0;i<seenHeaders.size();++i){if(seenHeaders[i].find("Bearer "+apiKey)!=string::npos) authed=true; if(seenBodies[i].find(apiKey)==string::npos && seenBodies[i].find("unit-model")!=string::npos && seenBodies[i].find("Connection test")!=string::npos) bodyOk=true;} assert(authed && bodyOk);}
+    call.cli.type="openai-responses"; assert(apiService.run(call)); assert(completed(apiService).step=="complete");
+    {std::lock_guard<std::mutex> lock(serverLock); bool input=false; for(const string& body:seenBodies) if(body.find("\"input\"")!=string::npos) input=true; assert(input);}
+    call.cli.type="anthropic"; call.cli.path="http://127.0.0.1:"+port; assert(apiService.run(call)); auto anthropic=completed(apiService); assert(anthropic.step=="complete");
+    assert(SpeechService::read(anthropic.result).find("thinking-secret")==string::npos);
+    {std::lock_guard<std::mutex> lock(serverLock); bool anthropic=false; for(const string& header:seenHeaders) if(header.find("x-api-key: "+apiKey)!=string::npos && header.find("anthropic-version: 2023-06-01")!=string::npos) anthropic=true; assert(anthropic);}
+    AiProfile kept=*apiService.find(apiId); kept.secret.clear(); assert(apiService.save(kept));
+    call.cli=*apiService.find(apiId); call.cli.type="openai-chat"; call.cli.path="http://127.0.0.1:"+port+"/v1"; call.cli.secret.clear();
+    assert(apiService.run(call)); assert(completed(apiService).step=="complete");
+    assert(apiService.refreshApi(*apiService.find(apiId))); assert(completed(apiService).step=="models_ready");
+    const string models=apiService.observation(apiId).models; assert(models.find("unit-a")!=string::npos && models.find("unit-b")!=string::npos);
+    call.cli.secret="reject-me-key-value"; assert(apiService.run(call)); assert(completed(apiService).step=="provider_error");
+    stopServer=true; server.join(); closesocket(listener);
+    std::error_code scanError; bool leakedOnDisk=false;
+    for(auto entry=fs::recursive_directory_iterator(root,scanError); entry!=fs::recursive_directory_iterator(); entry.increment(scanError)) {
+        if(scanError || !entry->is_regular_file()) {scanError.clear(); continue;}
+        const string bytes=SpeechService::read(entry->path().native(),8*1024*1024);
+        if(bytes.find(apiKey)!=string::npos || bytes.find("reject-me-key-value")!=string::npos) leakedOnDisk=true;
+    }
+    assert(!leakedOnDisk);
+    apiService.stop();
+    service.stop();restored.stop();puts("AI_NATIVE_OK profiles binding dual_sources context_containment preview stdio failure output_limit cancel no_automatic_resend api_endpoint api_secret api_http");
 }

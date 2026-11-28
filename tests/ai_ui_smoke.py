@@ -56,9 +56,12 @@ def main():
             page = wait_for(lambda: USER.GetDlgItem(owner, 961))
             assert 'CLI' in title(USER.GetDlgItem(page, 11))
             # Verify all settings categories stay independent and retain stable references.
-            for tab in (11, 12, 13):
+            for tab in (11, 12, 13, 14):
                 USER.SendMessageW(page, 0x0111, tab, 0)
                 assert USER.GetDlgItem(page, 20) and USER.GetDlgItem(page, 60)
+            USER.SendMessageW(page, 0x0111, 14, 0)
+            assert USER.SendMessageW(USER.GetDlgItem(page, 61), 0x0146, 0, 0) == 3
+            assert USER.GetDlgItem(page, 62) and USER.GetDlgItem(page, 67)
             USER.SendMessageW(page,0x0111,11,0)
             enable=USER.GetDlgItem(page,15)
             assert USER.SendMessageW(enable,0x00F0,0,0)==0
@@ -104,7 +107,7 @@ def main():
                 USER.SendMessageW(owner,0x0111,9900,0)
                 with Image.open(output/'PhoneRecord-7.bmp') as image:
                     image.convert('RGB').save(output/f'ai-analysis-{language}.png')
-                for tab,name in ((11,'cli'),(12,'projects'),(13,'prompts')):
+                for tab,name in ((11,'cli'),(12,'projects'),(13,'prompts'),(14,'api')):
                     USER.SendMessageW(page,0x0111,tab,0)
                     USER.SendMessageW(owner,0x0111,9900,0)
                     with Image.open(output/'PhoneRecord-7.bmp') as image:

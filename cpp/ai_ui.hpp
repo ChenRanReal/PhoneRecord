@@ -71,11 +71,12 @@ private:
         SendMessageW(GetDlgItem(window_,id),CB_SETCURSEL,found==values.end()?0:static_cast<WPARAM>(found-values.begin()),0);
     }
     /// Populate a category and optional built-in prompt contracts.
-    void populate(int id,const string& kind,bool empty=true,bool builtins=false) {
+    void populate(int id,const string& kind,bool empty=true,bool builtins=false,const char* extra=nullptr) {
         SendMessageW(GetDlgItem(window_,id),CB_RESETCONTENT,0,0);ids_[id].clear();
         if(empty)item(id,"",uiText("ai.none"));
         if(builtins) for(const char* key:{"summary","requirements","diagnosis","tasks"})item(id,key,uiText((string("ai.template.")+key).c_str()));
         for(const auto& p:g_ai.profiles())if(p.kind==kind)item(id,p.id,utf8ToWide(p.name));
+        if(extra) for(const auto& p:g_ai.profiles())if(p.kind==extra)item(id,p.id,utf8ToWide(string(extra)=="api"?"API · "+p.name:p.name));
         SendMessageW(GetDlgItem(window_,id),CB_SETCURSEL,0,0);
     }
     /// Return the selected saved profile or the selected built-in prompt snapshot.
@@ -90,7 +91,7 @@ private:
         labels_.clear();ids_.clear();shown_.clear();revision_=static_cast<uint64_t>(-1);
         control(L"BUTTON",15,"ai.enable",WS_TABSTOP|BS_AUTOCHECKBOX);
         SendMessageW(GetDlgItem(window_,15),BM_SETCHECK,g_ai.enabled()?BST_CHECKED:BST_UNCHECKED,0);
-        button(10,"ai.tab.analysis");button(11,"ai.tab.cli");button(12,"ai.tab.projects");button(13,"ai.tab.prompts");
+        button(10,"ai.tab.analysis");button(11,"ai.tab.cli");button(12,"ai.tab.projects");button(13,"ai.tab.prompts");button(14,"ai.tab.api");
         if(mode_==0) {
             control(L"STATIC",100,"ai.project");combo(30);button(50,"ai.bind");
             control(L"STATIC",101,"ai.cli");combo(31);control(L"STATIC",102,"ai.prompt");combo(32);
@@ -101,7 +102,7 @@ private:
             button(51,"ai.analyze");button(52,"ai.preview");button(53,"ai.cancel");button(54,"ai.copy");button(55,"ai.export");button(56,"ai.latest");button(58,"ai.history");
             control(L"STATIC",90,nullptr);edit(80,true);SendMessageW(GetDlgItem(window_,80),EM_SETREADONLY,TRUE,0);
             combo(35);
-            populate(30,"project");populate(31,"cli");populate(32,"prompt",false,true);
+            populate(30,"project");populate(31,"cli",true,false,"api");populate(32,"prompt",false,true);
             if(!wav_.empty()) {const string bound=g_ai.binding(wav_);select(30,bound);unresolved_=!bound.empty()&&!g_ai.find(bound);defaults();latest();}
             preferCli();
         } else {
@@ -114,13 +115,23 @@ private:
                 control(L"STATIC",103,"ai.model");control(WC_COMBOBOXW,63,nullptr,WS_TABSTOP|CBS_DROPDOWN|WS_VSCROLL);control(L"STATIC",106,"ai.effort");combo(66);item(66,"",uiText("ai.inherit"));for(const char* effort:{"minimal","low","medium","high","xhigh","max"})item(66,effort,utf8ToWide(effort));select(66,"");control(L"STATIC",104,"ai.timeout_seconds");edit(64);set(64,"300");button(57,"ai.test");                control(L"STATIC",105,"ai.lifecycle_help");
                 button(72,"ai.install_cli");button(73,"ai.refresh_models");button(74,"ai.login_cli");button(77,"ai.custom_cli");button(76,"ai.official_site");control(L"STATIC",108,nullptr);button(53,"ai.cancel");
                 ShowWindow(GetDlgItem(window_,61),SW_HIDE);ShowWindow(GetDlgItem(window_,101),SW_HIDE);
+            } else if(mode_==4) {
+                control(L"STATIC",101,"ai.format");combo(61);
+                item(61,"openai-chat",uiText("ai.format.openai-chat"));item(61,"openai-responses",uiText("ai.format.openai-responses"));item(61,"anthropic",uiText("ai.format.anthropic"));select(61,"openai-chat");
+                control(L"STATIC",102,"ai.base_url");edit(62);
+                control(L"STATIC",107,"ai.api_key");control(L"EDIT",67,nullptr,WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD);SendMessageW(GetDlgItem(window_,67),EM_SETLIMITTEXT,4096,0);
+                control(L"STATIC",109,"ai.api_key_missing");
+                control(L"STATIC",103,"ai.model_id");control(WC_COMBOBOXW,63,nullptr,WS_TABSTOP|CBS_DROPDOWN|WS_VSCROLL);
+                control(L"STATIC",104,"ai.timeout_seconds");edit(64);set(64,"300");
+                button(73,"ai.refresh_models");button(57,"ai.test");button(53,"ai.cancel");
+                control(L"STATIC",108,nullptr);control(L"STATIC",105,"ai.api.help");
             } else if(mode_==2) {
                 control(L"STATIC",102,"ai.folder");edit(62);button(71,"ai.browse");
-                control(L"STATIC",101,"ai.default_cli");combo(61);populate(61,"cli");
+                control(L"STATIC",101,"ai.default_cli");combo(61);populate(61,"cli",true,false,"api");
                 control(L"STATIC",103,"ai.default_prompt");combo(63);populate(63,"prompt",false,true);select(63,"requirements");
                 control(L"STATIC",104,"ai.project_prompt");edit(64,true);control(L"STATIC",105,"ai.references");edit(65,true);
             } else {control(L"STATIC",104,"ai.prompt_body");edit(64,true);}
-            populate(20,mode_==1?"cli":mode_==2?"project":"prompt",false,mode_==3);load();
+            populate(20,mode_==1?"cli":mode_==4?"api":mode_==2?"project":"prompt",false,mode_==3);load();
             button(59,"ai.show_final");
         }
         locale_=g_uiLanguage.load();layout();refresh();
@@ -157,13 +168,15 @@ private:
         }
         set(60,p->name);set(62,p->path);
         if(mode_==1) {select(61,p->type);set(63,p->model);modelChoices(p->model);select(66,p->effort);set(64,std::to_string(p->timeout));}
+        else if(mode_==4) {select(61,p->type);set(63,p->model);apiModelChoices(p->model);set(64,std::to_string(p->timeout));set(67,"");setKeyState(g_ai.hasSecret(p->id));}
         else {select(61,p->cli);select(63,p->prompt);SetWindowTextW(GetDlgItem(window_,64),display(p->body).c_str());SetWindowTextW(GetDlgItem(window_,65),display(p->references).c_str());}
         if(mode_==1) syncToolList();
     }
     /// Read the active editor without mutating the persisted profile collection.
     AiProfile editor() const {
-        AiProfile p;p.id=editing_;p.kind=mode_==1?"cli":mode_==2?"project":"prompt";p.name=value(60);p.path=value(62);
+        AiProfile p;p.id=editing_;p.kind=mode_==1?"cli":mode_==4?"api":mode_==2?"project":"prompt";p.name=value(60);p.path=value(62);
         if(mode_==1) {p.type=selected(61);p.model=value(63);p.effort=selected(66);p.timeout=static_cast<unsigned>(strtoul(value(64).c_str(),NULL,10));}
+        else if(mode_==4) {p.type=selected(61);p.model=value(63);p.secret=value(67);p.timeout=static_cast<unsigned>(strtoul(value(64).c_str(),NULL,10));}
         else {p.cli=selected(61);p.prompt=selected(63);p.body=value(64);p.references=value(65);}
         return p;
     }
@@ -205,6 +218,25 @@ private:
         if(!keep.empty() && std::find(seen.begin(),seen.end(),keep)==seen.end() && keep.size()<=256)SendMessageW(combo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(utf8ToWide(keep).c_str()));
         set(63,keep);const string source=observed.source.empty()?"manual":observed.source;
         wstring caption=uiText(("ai.models_source."+source).c_str());if(observed.cached)caption+=L"\r\n"+wstring(uiText("ai.models_cached"));SetWindowTextW(GetDlgItem(window_,108),caption.c_str());
+        if(open)SendMessageW(combo,CB_SHOWDROPDOWN,FALSE,0);
+    }
+    /// Show whether a key is already stored. The edit stays empty so the key is not redrawn.
+    void setKeyState(bool saved) {
+        labels_[109]=saved?"ai.api_key_saved":"ai.api_key_missing";
+        if(HWND hint=GetDlgItem(window_,109)) SetWindowTextW(hint,uiText(labels_[109].c_str()));
+    }
+    /// Fill the API model box from the last list for this profile, keeping a typed id.
+    void apiModelChoices(const string& current="") {
+        HWND combo=GetDlgItem(window_,63);if(!combo || mode_!=4)return;
+        const string keep=current.empty()?value(63):current;
+        const auto observed=g_ai.observation(editing_.empty()?"draft":editing_);
+        const bool open=SendMessageW(combo,CB_GETDROPPEDSTATE,0,0)!=0;
+        SendMessageW(combo,CB_RESETCONTENT,0,0);std::vector<string> seen;std::istringstream lines(observed.models);string line;
+        while(std::getline(lines,line)){if(!line.empty() && line.back()=='\r')line.pop_back();if(line.empty() || !aiApiModelId(line) || std::find(seen.begin(),seen.end(),line)!=seen.end())continue;seen.push_back(line);SendMessageW(combo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(utf8ToWide(line).c_str()));}
+        if(!keep.empty() && std::find(seen.begin(),seen.end(),keep)==seen.end() && aiApiModelId(keep))SendMessageW(combo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(utf8ToWide(keep).c_str()));
+        set(63,keep);
+        wstring caption=uiText("ai.models_source.api");if(observed.cached && !observed.models.empty())caption+=L"\r\n"+wstring(uiText("ai.models_cached"));
+        if(HWND source=GetDlgItem(window_,108))SetWindowTextW(source,caption.c_str());
         if(open)SendMessageW(combo,CB_SHOWDROPDOWN,FALSE,0);
     }
     /// Enumerate successful per-CLI final responses without mixing intermediate process output.
@@ -267,22 +299,22 @@ private:
         if(id==15){if(!g_ai.setEnabled(SendMessageW(GetDlgItem(window_,15),BM_GETCHECK,0,0)==BST_CHECKED))notice("ai.save_failed");}
         if((id==57||id==72||id==73||id==74) && !g_ai.enabled()){if(!g_ai.setEnabled(true)){notice("ai.save_failed");refresh();return;}SendMessageW(GetDlgItem(window_,15),BM_SETCHECK,BST_CHECKED,0);}
         if(id==51 && !g_ai.enabled()){notice("ai.disabled");refresh();return;}
-        if(id>=10 && id<=13) {mode_=id-10;build();return;}
+        if(id>=10 && id<=14) {mode_=id-10;build();return;}
         if(id==20 && notification==CBN_SELCHANGE && static_cast<int>(SendMessageW(GetDlgItem(window_,20),CB_GETCURSEL,0,0))>=0) load();
         if(id==24 && notification==LBN_SELCHANGE) {
             const int index=static_cast<int>(SendMessageW(GetDlgItem(window_,24),LB_GETCURSEL,0,0));
             if(index>=0 && index<static_cast<int>(std::size(kAiCliTools))){const auto& tool=kAiCliTools[index];editing_.clear();set(60,wideToUtf8(wstring(tool.name)));select(61,tool.id);set(62,wideToUtf8(aiCliPath(tool.id)));set(63,"");modelChoices();ensureModels(false);SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
         }
-        if(id==61 && notification==CBN_SELCHANGE){set(62,wideToUtf8(aiCliPath(selected(61))));set(63,"");modelChoices();ensureModels(false);}
+        if(id==61 && notification==CBN_SELCHANGE && mode_==1){set(62,wideToUtf8(aiCliPath(selected(61))));set(63,"");modelChoices();ensureModels(false);}
         if(id==35 && notification==CBN_SELCHANGE){const int index=static_cast<int>(SendMessageW(GetDlgItem(window_,35),CB_GETCURSEL,0,0));if(index>=0 && index<static_cast<int>(resultFiles_.size()))showResult(resultFiles_[index]);}
         if(id==59){mode_=0;build();return;}
         if(id==30 && notification==CBN_SELCHANGE) {unresolved_=false;defaults();}
-        if(id==21) {editing_.clear();for(int field:{60,62,63,64,65})set(field,"");if(mode_==1){set(64,"300");select(66,"");modelChoices();syncToolList();}SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
+        if(id==21) {editing_.clear();for(int field:{60,62,63,64,65,67})set(field,"");if(mode_==1){set(64,"300");select(66,"");modelChoices();syncToolList();}if(mode_==4){select(61,"openai-chat");set(64,"300");setKeyState(false);apiModelChoices("");}SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
         if(id==77) {editing_.clear();select(61,"stdin");set(60,wideToUtf8(uiText("ai.type.stdin")));set(62,"");set(63,"");set(64,"300");select(66,"");modelChoices();syncToolList();SendMessageW(GetDlgItem(window_,20),CB_SETCURSEL,static_cast<WPARAM>(-1),0);}
         if(id==22) {auto p=editor();if(p.id.empty())p.id=AiAnalysis::identity();if(!g_ai.save(p)){notice("ai.profile_invalid");return;}const string identity=p.id;populate(20,p.kind,false,mode_==3);select(20,identity);load();notice("ai.saved");}
         if(id==23 && !editing_.empty()) {if(!g_ai.erase(editing_)){notice("ai.referenced");return;}editing_.clear();build();}
         if(id==71)browse();
-        if(id==72 || id==73){auto p=editor();if(!g_ai.manage(p,id==72?"install":"models"))notice("ai.busy");}
+        if(id==72 || id==73){auto p=editor();if(mode_==4){if(id==73 && !g_ai.refreshApi(p))notice("ai.profile_invalid");}else if(!g_ai.manage(p,id==72?"install":"models"))notice("ai.busy");}
         if(id==74 && !g_ai.login(editor()))notice("ai.login_failed");
         if(id==76){if(const auto* tool=aiCliTool(selected(61)))ShellExecuteW(window_,L"open",tool->documentation,NULL,NULL,SW_SHOWNORMAL);}
         if(id==50) {if(!g_ai.bind(wav_,selected(30)))notice("ai.recording_invalid");else {unresolved_=false;notice("ai.saved");}}
@@ -291,7 +323,7 @@ private:
             if(!g_ai.bind(wav_,selected(30))) {notice("ai.recording_invalid");return;}
             unresolved_=false;if(!g_ai.run(r,id==52))notice("ai.busy");
         }
-        if(id==57) {AiRequest r;r.test=true;r.cli=editor();if(r.cli.timeout<10 || r.cli.timeout>3600){notice("ai.profile_invalid");return;}if(!g_ai.run(r))notice("ai.busy");}
+        if(id==57) {AiRequest r;r.test=true;r.cli=editor();string endpoint,ignored;if(r.cli.timeout<10 || r.cli.timeout>3600 || (r.cli.kind=="api" && (!aiApiEndpoint(r.cli.type,r.cli.path,endpoint,ignored) || !aiApiModelId(r.cli.model)))){notice("ai.profile_invalid");return;}if(!g_ai.run(r))notice("ai.busy");}
         if(id==53)g_ai.cancel();if(id==54)copy();if(id==55)exportResult();if(id==56)latest();
         if(id==58 && !wav_.empty()) {const wstring folder=wav_+L".ai-history";if(GetFileAttributesW(folder.c_str())!=INVALID_FILE_ATTRIBUTES)ShellExecuteW(window_,L"open",folder.c_str(),NULL,NULL,SW_SHOWNORMAL);}
         refresh();
@@ -306,7 +338,7 @@ private:
                 const string previous=selected(combo.first);
                 for(size_t index=0;index<combo.second.size();++index) {
                     const string& id=combo.second[index];const char* key=id.empty()?(combo.first==66?"ai.inherit":"ai.none"):id=="stdin"?"ai.type.stdin":nullptr;
-                    string temporary;if(id=="summary"||id=="requirements"||id=="diagnosis"||id=="tasks"){temporary="ai.template."+id;key=temporary.c_str();}
+                    string temporary;if(id=="summary"||id=="requirements"||id=="diagnosis"||id=="tasks"){temporary="ai.template."+id;key=temporary.c_str();}else if(id=="openai-chat"||id=="openai-responses"||id=="anthropic"){temporary="ai.format."+id;key=temporary.c_str();}
                     if(key){SendMessageW(GetDlgItem(window_,combo.first),CB_DELETESTRING,index,0);SendMessageW(GetDlgItem(window_,combo.first),CB_INSERTSTRING,index,reinterpret_cast<LPARAM>(uiText(key)));}
                 }
                 select(combo.first,previous);
@@ -320,6 +352,7 @@ private:
         EnableWindow(GetDlgItem(window_,52),!state.busy);
         for(int id:{72,73,74})EnableWindow(GetDlgItem(window_,id),!state.busy && selected(61)!="stdin");
         if(mode_==1){const auto observed=g_ai.observation(selected(61));if(toolRevision_!=observed.revision){toolRevision_=observed.revision;catalog();if(value(62).empty() && !observed.path.empty())set(62,observed.path);modelChoices();}ensureModels(true);}
+        if(mode_==4){const auto observed=g_ai.observation(editing_.empty()?"draft":editing_);if(toolRevision_!=observed.revision){toolRevision_=observed.revision;apiModelChoices();}}
         EnableWindow(GetDlgItem(window_,53),state.busy);
         if(revision_!=state.revision) {
             revision_=state.revision;
@@ -334,7 +367,7 @@ private:
     void layout() {
         RECT rect{};GetClientRect(window_,&rect);const int w=MulDiv(rect.right,96,dpi_),h=MulDiv(rect.bottom,96,dpi_),half=(w-44)/2;
         const auto move=[&](int id,int x,int y,int width,int height){if(HWND child=GetDlgItem(window_,id))MoveWindow(child,px(x),px(y),px(std::max(1,width)),px(std::max(1,height)),TRUE);};
-        for(int i=0;i<4;++i)move(10+i,12+i*(w-24)/4,0,(w-32)/4,32);
+        for(int i=0;i<5;++i)move(10+i,12+i*(w-24)/5,0,(w-40)/5,32);
         move(15,12,36,w-24,22);
         const int y=28;
         if(mode_==0) {
@@ -361,6 +394,14 @@ private:
                 move(108,x,360+y,r,40);move(105,x,406+y,r,std::max(48,std::min(84,h-520)));
                 move(53,x,h-78,120,32);move(76,x+132,h-78,r-132,32);
                 move(59,x,h-38,r,28);
+            } else if(mode_==4) {
+                move(100,12,92+y,110,22);move(60,128,86+y,w-140,30);
+                move(101,12,132+y,110,22);move(61,128,126+y,w-140,180);
+                move(102,12,172+y,110,22);move(62,128,166+y,w-140,30);
+                move(107,12,212+y,110,22);move(67,128,206+y,w-140,30);move(109,128,240+y,w-140,22);
+                move(103,12,272+y,110,22);move(63,128,266+y,w-250,200);move(104,w-140,272+y,52,22);move(64,w-84,266+y,72,30);
+                move(73,12,312+y,(w-32)/3,32);move(57,20+(w-32)/3,312+y,(w-32)/3,32);move(53,28+2*(w-32)/3,312+y,(w-32)/3,32);
+                move(108,12,352+y,w-24,36);move(105,12,392+y,w-24,std::max(48,std::min(110,h-520)));
             } else if(mode_==2) {
                 move(102,12,136+y,90,22);move(62,108,130+y,w-214,30);move(71,w-98,130+y,86,30);
                 move(101,12,180+y,90,22);move(61,108,174+y,half-96,180);move(103,half+24,180+y,100,22);move(63,half+128,174+y,half-104,180);
@@ -383,9 +424,11 @@ private:
                 FillRect(dc,&input,white_);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(31,51,77));SelectObject(dc,font_);DrawTextW(dc,caption,-1,&input,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS);
             }
             const bool combo=wcscmp(kind,L"ComboBox")==0,edit=wcscmp(kind,L"Edit")==0;
+            const bool password=edit && (GetWindowLongW(child,GWL_STYLE)&ES_PASSWORD);
             if(combo || edit) {
                 wstring text;
                 if(combo) {const LRESULT selected=SendMessageW(child,CB_GETCURSEL,0,0),count=SendMessageW(child,CB_GETLBTEXTLEN,selected,0);if(count>=0 && count<4096){text.resize(static_cast<size_t>(count)+1);SendMessageW(child,CB_GETLBTEXT,selected,reinterpret_cast<LPARAM>(&text[0]));text.resize(count);}}
+                else if(password) text=GetWindowTextLengthW(child)>0?L"••••••":L"";
                 else {const int count=std::min(65536,GetWindowTextLengthW(child));text.resize(static_cast<size_t>(count)+1);GetWindowTextW(child,&text[0],count+1);text.resize(count);}
                 RECT input{px(5),px(3),r.right-r.left-px(combo?24:18),r.bottom-r.top-px(3)};FillRect(dc,&input,white_);SelectObject(dc,font_);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(31,51,77));
                 DrawTextW(dc,text.c_str(),-1,&input,DT_LEFT|DT_NOPREFIX|(combo?DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS:DT_WORDBREAK));
@@ -408,7 +451,7 @@ private:
         }
         case WM_DRAWITEM:{
             const auto* item=reinterpret_cast<DRAWITEMSTRUCT*>(lparam);if(item->CtlType!=ODT_BUTTON) break;
-            const bool tab=item->CtlID>=10 && item->CtlID<=13,primary=item->CtlID==22||item->CtlID==51||item->CtlID==72,selected=tab && item->CtlID-10==self->mode_,disabled=(item->itemState&ODS_DISABLED)!=0;
+            const bool tab=item->CtlID>=10 && item->CtlID<=14,primary=item->CtlID==22||item->CtlID==51||item->CtlID==72,selected=tab && item->CtlID-10==self->mode_,disabled=(item->itemState&ODS_DISABLED)!=0;
             const COLORREF fill=disabled?RGB(226,230,236):primary?RGB(43,105,230):selected?RGB(255,255,255):RGB(236,240,246);
             HBRUSH brush=CreateSolidBrush(fill);FillRect(item->hDC,&item->rcItem,brush);DeleteObject(brush);
             if(!primary){HBRUSH edge=CreateSolidBrush(selected?RGB(43,105,230):RGB(209,219,234));FrameRect(item->hDC,&item->rcItem,edge);DeleteObject(edge);}

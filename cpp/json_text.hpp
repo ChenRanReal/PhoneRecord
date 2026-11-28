@@ -22,7 +22,8 @@ static bool readJsonHex(const string& input, size_t& position, uint32_t& value) 
 }
 
 /// Decode one JSON string including escaped quotes, Unicode and surrogate pairs.
-static bool readJsonString(const string& input, size_t& position, string& output) {
+/// `limit` stops a metadata field from accepting an unbounded value; API text uses a higher cap.
+static bool readJsonString(const string& input, size_t& position, string& output, size_t limit = 65536) {
     output.clear();
     if (position >= input.size() || input[position++] != '"') return false;
     while (position < input.size()) {
@@ -49,7 +50,7 @@ static bool readJsonString(const string& input, size_t& position, string& output
             } else if (scalar >= 0xdc00 && scalar <= 0xdfff) return false;
             appendJsonScalar(output, scalar);
         } else return false;
-        if (output.size() > 65536) return false;
+        if (output.size() > limit) return false;
     }
     return false;
 }

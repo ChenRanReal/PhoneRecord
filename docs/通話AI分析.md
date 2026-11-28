@@ -2,13 +2,14 @@
 
 ## 使用方式與範圍
 
-通話 AI 分析是高階功能，預設關閉。CLI 頁的「一鍵安裝」「登入」「更新模型」「測試連線」可直接使用，並會一併打開此開關；「AI 分析」仍須開關為開啟。關閉後停止進行中的安裝或分析，已保存的結果仍可查看。CLI、專案與提示詞各自保存，以穩定 ID 關聯。每通錄音可指定專案，一鍵使用該專案的預設 CLI 與提示詞，結合多份本地轉寫整理需求。x86 不建立入口或分析程序。SenseVoice／Qwen3-ASR 產生的是轉寫，摘要由 CLI 完成。
+通話 AI 分析是高階功能，預設關閉。CLI 頁的「一鍵安裝」「登入」「更新模型」「測試連線」，以及 API 頁的「更新模型」「測試連線」，可直接使用，並會一併打開此開關；「AI 分析」仍須開關為開啟。關閉後停止進行中的安裝或分析，已保存的結果仍可查看。CLI、API、專案與提示詞各自保存，以穩定 ID 關聯。每通錄音可指定專案，一鍵使用該專案的預設配置與提示詞，結合多份本地轉寫整理需求。x86 不建立入口或分析程序。SenseVoice／Qwen3-ASR 產生的是轉寫，摘要由所選 CLI 或 API 完成。
 
 1. 開啟「通話 AI 分析 → CLI 設定」。左側是本機工具：Claude Code、ChatGPT／Codex CLI、Cursor Agent、Antigravity、CodeBuddy、Qwen Code、Kimi Code、Qoder、TRAE CLI。實心圓點表示已找到執行檔。點一個工具會填入一份尚未保存的新設定，不會改到上方正在修改的舊設定。上方「正在修改」只切換已經保存的設定；「新增」清空表單，「保存」寫入目前表單，「刪除」去掉這條設定。類型不再單獨用一個下拉框。自訂 stdin/stdout EXE 用「自訂程式」。預設模型可從清單選擇，也可直接輸入。「更新模型」再讀一次工具清單。逾時為 10–3600 秒。推理強度只覆寫本次程序。測試連線只使用合成文字，也可能消耗提供者額度。
 2. 在「提示詞」選擇一般摘要、專案需求分析、問題排查、開發任務整理。編輯內建模板後保存為自訂副本，不修改內建原稿。
-3. 在「專案設定」新增名稱、資料夾、預設 CLI、預設提示詞、專案術語／補充指示及參考檔案相對路徑（每行一個）。仍被專案使用的 CLI／提示詞不能直接刪除。
-4. 在錄音列表選取已完成電話，右鍵「AI 分析」。選專案後帶入預設值；單次更換 CLI／模板／來源／輸出語言不改專案預設。
-5. 「保存關聯」保存通話對應的專案。「預覽輸入」在背景產生完整輸入，不呼叫 CLI。「AI 分析」保存關聯並啟動工具。完成後，最終 Markdown 直接顯示在頁面；結果選單可切換同一通錄音裡不同 CLI／模型的成功版本。
+3. 在「專案設定」新增名稱、資料夾、預設配置、預設提示詞、專案術語／補充指示及參考檔案相對路徑（每行一個）。仍被專案使用的 CLI、API 或提示詞不能直接刪除。
+4. 在「API 介面」新增一條標準介面。API 格式為 OpenAI Chat Completions、OpenAI Responses API 或 Anthropic Messages。Chat Completions／Responses 的位址填到版本前綴（例如 `https://api.openai.com/v1`），程式分別追加 `/chat/completions`、`/responses`；Anthropic 填服務根（例如 `https://api.anthropic.com`），程式追加 `/v1/messages`。已經寫完整路徑則不再追加。相容閘道與本機 Ollama、LM Studio 選 Chat Completions。只允許 https；http 僅限 `127.0.0.1`、`localhost`、`::1`。金鑰用目前 Windows 帳戶 DPAPI 加密，留空表示不修改，不會寫入分析歷史。模型 ID 可手輸，也可按「更新模型」讀取 `GET …/models`。測試連線只發送一句合成文字。請求不串流、不跟隨重新導向。Anthropic 固定 `max_tokens` 為 8192。不另做 Azure `api-key` 標頭。
+5. 在錄音列表選取已完成電話，右鍵「AI 分析」。選專案後帶入預設值；單次更換配置／模板／來源／輸出語言不改專案預設。分析配置下拉同時列出 CLI 與 API，API 名稱前有 `API ·`。
+6. 「保存關聯」保存通話對應的專案。「預覽輸入」在背景產生完整輸入，不呼叫 CLI 或 API。「AI 分析」保存關聯並啟動所選配置。完成後，最終 Markdown 直接顯示在頁面；結果選單可切換同一通錄音裡不同配置／模型的成功版本。
 
 以 iLab 為例：選取本地 checkout，預設「專案需求分析」，參考清單列出本次涉及的業務文件、畫面、API 或服務檔案。輸出要求區分用戶明確需求、附檔可證明的專案現況、AI 建議與待確認事項，並附原話來源／時間及專案路徑。
 
@@ -37,6 +38,20 @@ CLI 可能把文字送往提供者雲端；本地 ASR 與雲端分析分開。
 
 依據：[Claude Code](https://code.claude.com/docs/en/setup)、[Codex CLI](https://learn.chatgpt.com/docs/codex/cli)、[Cursor CLI](https://cursor.com/docs/cli/installation)、[Antigravity CLI](https://antigravity.google/docs/cli/install)、[CodeBuddy](https://www.codebuddy.cn/docs/cli/installation)、[Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/)、[Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html)、[Qoder CLI](https://docs.qoder.com/cli/installation)、[TRAE CLI](https://docs.trae.cn/cli_get-started-with-trae-cli-2)。ZCode 官方 Windows 版是桌面安裝程式，沒有與上述工具相同的官方命令列安裝腳本，因此未列入一鍵安裝。
 
+## 標準 API
+
+三種格式都把整理後的同一份提示詞當作一則 user 訊息發送，不拆 system，也不上傳原始音訊。
+
+| 格式 | 認證 | 請求 |
+| --- | --- | --- |
+| OpenAI Chat Completions | `Authorization: Bearer` | `POST …/chat/completions`，`messages` |
+| OpenAI Responses API | `Authorization: Bearer` | `POST …/responses`，`input` 為整段提示詞 |
+| Anthropic Messages | `x-api-key` 與 `anthropic-version: 2023-06-01` | `POST …/v1/messages`，`max_tokens` 8192 |
+
+成功時只保存助理可見文字。Chat Completions 讀 `choices[0].message.content`（字串或 text 片段）；Responses 優先 `output_text`，否則取 `output` 裡 type 為 message 的 `output_text`；Anthropic 只串接 type 為 text 的片段，略過 thinking。HTTP 非 2xx、連線失敗、逾時與超過 2 MiB 都不算分析成功。本機迴路走不經代理的連線，其餘走系統代理。取消會關閉進行中的請求。
+
+金鑰檔在 INI 旁的 `.ai-profiles.secrets`，只含 DPAPI 密文。分析目錄裡的 `analysis.json` 仍保存位址與模型 ID，不保存金鑰。錯誤診斷寫入 `stderr.txt` 前會去掉金鑰。
+
 ## 本地資料與結果
 
 選定 INI 旁的 `.ai-profiles` 為 JSON Lines，最多100項設定。通話關聯存於 `call.wav.ai-project.json`，原始 WAV 不移動。每次分析保存獨立版本：
@@ -57,7 +72,7 @@ request.json 保存設定快照、輸入 SHA-256 與終態；預覽也保存獨�
 
 僅 x64 Windows 原生端新增入口。簡中、繁中、English 的預設、使用者選擇來源及缺漏顯示沿用既有行為；文案集中於 `cpp/ai_resources.inc`，由 `ui_resources.hpp` 載入。內建模板有三語內容，自訂名稱／提示詞保留原文。輸出語言首次跟隨 UI，可另選；切換 UI 不改已選輸出語言或既有結果。模型 ID、雜湊、JSON key 與數值時間不翻譯。
 
-安裝狀態、模型來源說明與結果選單沿用同一套三語資源。驗收涵蓋三語設定／分析頁、長文字捲動、中文路徑及 UTF-8 輸入輸出。系統檔案對話框與官方安裝程式介面沿用 Windows／該工具語言。
+安裝狀態、模型來源說明、API 格式與結果選單沿用同一套三語資源。API 頁新增的標籤、欄位、說明與錯誤都有簡中、繁中、English；預設語言、選擇來源與缺漏顯示不變。模型 ID、位址與協議名稱不翻譯。驗收涵蓋三語設定／分析頁、長文字捲動、中文路徑及 UTF-8 輸入輸出。系統檔案對話框與官方安裝程式介面沿用 Windows／該工具語言。
 
 ## 建置、驗證與限制
 
@@ -68,7 +83,7 @@ pwsh -NoProfile -File tools/Test-AiAnalysis.ps1
 py tests/ai_ui_smoke.py --exe tmp/ai-x64/PhoneRecord-x64.exe --fixture <test-build>/ai_cli_fixture.exe --output tmp/ai-ui-evidence
 ```
 
-原生測試用合成錄音身份、雙轉寫、參考文件與假 CLI，覆蓋設定復原、引用刪除保護、通話關聯、來源未完成、越界、預覽、stdio、非零退出、輸出限制、取消、逾時、更新互斥及原始資料不變。Worker 測試覆蓋九種工具的偵測、模型來源與模擬官方安裝。原生 UI 測試覆蓋工具清單、已存在執行檔的安裝檢查、模型更新與預設模型保存、兩份 CLI 結果切換、專案預設帶入、雙來源預覽及三語切換。UI 測試會先切到簡體中文，避免系統預設繁體時把「已安裝」誤判為失敗。
+原生測試用合成錄音身份、雙轉寫、參考文件與假 CLI，覆蓋設定復原、引用刪除保護、通話關聯、來源未完成、越界、預覽、stdio、非零退出、輸出限制、取消、逾時、更新互斥及原始資料不變。並覆蓋三種 API 的位址拼接、拒絕明文外送與查詢金鑰、請求體、回應抽取，以及本機迴路的 Chat Completions、Responses、Anthropic、模型清單、401 與金鑰不落盤。Worker 測試覆蓋九種工具的偵測、模型來源與模擬官方安裝。原生 UI 測試覆蓋工具清單、已存在執行檔的安裝檢查、模型更新與預設模型保存、兩份 CLI 結果切換、專案預設帶入、雙來源預覽及三語切換。UI 測試會先切到簡體中文，避免系統預設繁體時把「已安裝」誤判為失敗。
 
 假 CLI 通過不等於真實提供者成功。本機 CodeBuddy 合成連線實測回傳 `400 the reasoning effort value is not supported by the current model` 至 stderr，但程序退出碼為0；程序覆寫為 medium 後仍遭相同錯誤。已加入 stdout／stderr 的已知提供者錯誤辨識與原生回歸，不把它保存成成功摘要，未修改工具個人設定。需選擇相容的 reasoning effort／模型後再測；Claude Code 尚未在本機安裝，真實聯測待驗證。
 

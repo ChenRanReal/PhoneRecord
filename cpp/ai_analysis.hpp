@@ -2,13 +2,16 @@
 #ifdef _WIN64
 #include <filesystem>
 #include "ai_cli_catalog.hpp"
+#include "ai_api.hpp"
 
-/// One independently persisted CLI, project or prompt profile; IDs survive renaming.
+/// One independently persisted CLI, project, prompt or API profile; IDs survive renaming.
 struct AiProfile {
     /// Stable identity, category, display name and category-specific fields.
     string id, kind, name, type, path, model, models, effort, cli, prompt, body, references;
     /// Explicit process deadline in seconds; never interpreted as shell syntax.
     unsigned timeout = 300;
+    /// API key kept only in memory. It is never written by encode() or into analysis history.
+    string secret;
 };
 
 /// Immutable request captured on the UI thread before any background work starts.
@@ -66,7 +69,13 @@ public:
         }
         enabled_=SpeechService::read(config_+L".enabled",16)=="1";
         std::istringstream cache(SpeechService::read(config_+L".models",512*1024));
-        while(std::getline(cache,row)){const string type=jsonField(row,"type");if(!aiCliTool(type))continue;auto& saved=observations_[type];saved.path=jsonField(row,"path");saved.models=jsonField(row,"models");saved.source=jsonField(row,"source");saved.version=jsonField(row,"version");saved.cached=true;++saved.revision;}
+        while(std::getline(cache,row)){
+            string type=jsonField(row,"type");
+            if(type.compare(0,4,"api:")==0){type=type.substr(4);if(type.empty()||type=="draft"||aiCliTool(type))continue;}
+            else if(!aiCliTool(type))continue;
+            auto& saved=observations_[type];saved.path=jsonField(row,"path");saved.models=jsonField(row,"models");saved.source=jsonField(row,"source");saved.version=jsonField(row,"version");saved.cached=true;++saved.revision;
+        }
+        loadSecrets();
     }
     /// Return GUI-owned profiles; worker threads only use captured request copies.
     const std::vector<AiProfile>& profiles() const { return profiles_; }
@@ -84,21 +93,28 @@ public:
     }
     /// Persist a validated profile atomically and restore memory on save failure.
     bool save(AiProfile p) {
+        const string typed=p.secret; p.secret.clear();
+        if(!typed.empty() && !aiApiKeyOk(typed)) return false;
         if (p.id.empty()) p.id=identity();
         if (!valid(p)) return false;
         auto old=profiles_; bool replaced=false;
         for (auto& current:profiles_) if (current.id==p.id) { current=p; replaced=true; break; }
         if (!replaced) { if(profiles_.size()>=100) return false; profiles_.push_back(p); }
-        if (persist()) return true;
-        profiles_=std::move(old); return false;
+        if (!persist()) { profiles_=std::move(old); return false; }
+        if(p.kind=="api" && !typed.empty()) {
+            auto previous=secrets_; secrets_[p.id]=typed;
+            if(!persistSecrets()) { secrets_=std::move(previous); profiles_=std::move(old); persist(); return false; }
+        }
+        return true;
     }
     /// Delete only unreferenced profiles; conversation bindings keep their historical identity.
     bool erase(const string& id) {
         for (const auto& p:profiles_) if(p.cli==id || p.prompt==id) return false;
-        auto old=profiles_;
+        auto old=profiles_; auto previous=secrets_;
         profiles_.erase(std::remove_if(profiles_.begin(),profiles_.end(),[&](const AiProfile& p){return p.id==id;}),profiles_.end());
-        if(persist()) return true;
-        profiles_=std::move(old); return false;
+        secrets_.erase(id);
+        if(persist() && persistSecrets()) return true;
+        profiles_=std::move(old); secrets_=std::move(previous); persist(); persistSecrets(); return false;
     }
     /// Persist a project association without moving or modifying the source WAV.
     bool bind(const wstring& wav,const string& project) {
@@ -211,6 +227,7 @@ public:
     }
     /// Admit one captured operation. Preview construction happens only in the background.
     bool run(AiRequest request,bool preview=false) {
+        if(request.cli.kind=="api" && request.cli.secret.empty()) { auto found=secrets_.find(request.cli.id); if(found!=secrets_.end()) request.cli.secret=found->second; }
         std::lock_guard<std::mutex> admission(g_updateAdmission);
         if(g_updateInstalling) return false;
         {std::lock_guard<std::mutex> lock(mutex_); if(state_.busy) return false;}
@@ -224,9 +241,13 @@ public:
     /// Observe progress without exposing prompt text or provider stderr in logs.
     AiState state() const {std::lock_guard<std::mutex> lock(mutex_);return state_;}
     /// Signal cancellation; owned children are terminated by the worker's Job Object.
-    void cancel() {cancel_=true;}
+    void cancel() {
+        cancel_=true; HINTERNET request=NULL;
+        {std::lock_guard<std::mutex> lock(httpMutex_); request=http_; http_=NULL;}
+        if(request) WinHttpCloseHandle(request);
+    }
     /// Stop explicitly without resending paid/private work on the next startup.
-    void stop() {cancel_=true;if(worker_.joinable())worker_.join();}
+    void stop() {cancel();if(worker_.joinable())worker_.join();}
     /// Queue a deliberate lifecycle action; no installation/login occurs during ordinary navigation.
     bool manage(const AiProfile& profile,const string& operation) {
         if(!aiCliTool(profile.type) || (operation!="install" && operation!="probe" && operation!="models"))return false;
@@ -234,6 +255,17 @@ public:
     }
     /// Copy normalized management facts under the same mutex as operation state.
     AiCliObservation observation(const string& type) const {std::lock_guard<std::mutex> lock(mutex_);auto found=observations_.find(type);return found==observations_.end()?AiCliObservation{}:found->second;}
+    /// Report whether an API profile already has a saved key, without revealing the key.
+    bool hasSecret(const string& id) const {return !id.empty() && secrets_.find(id)!=secrets_.end();}
+    /// Read the model list for one saved API address. An empty profile id uses the unsaved draft slot.
+    bool refreshApi(AiProfile profile) {
+        string endpoint, error;
+        if(profile.kind!="api" || !aiApiEndpoint(profile.type, profile.path, endpoint, error)) return false;
+        if(profile.id.empty()) profile.id="draft";
+        profile.timeout=30;
+        AiRequest request; request.cli=profile; request.operation="api-models";
+        return run(request);
+    }
     /// Open an explicitly requested interactive sign-in console; never capture OAuth codes or passwords.
     bool login(const AiProfile& profile) {
         if(login_ || !aiCliTool(profile.type))return false;
@@ -279,8 +311,7 @@ private:
         {std::lock_guard<std::mutex> lock(mutex_);auto& saved=observations_[request.cli.type];saved.step=step;
             if(step=="installed" || step=="models_ready") {saved.path=jsonField(body,"path");saved.version=jsonField(body,"version");if(step=="models_ready"){saved.models=jsonField(body,"models");saved.source=jsonField(body,"source");saved.cached=false;}}
             ++saved.revision;
-            string cache;for(const auto& item:observations_)cache+="{\"type\":"+jsonQuoted(item.first)+",\"path\":"+jsonQuoted(item.second.path)+",\"models\":"+jsonQuoted(item.second.models)+",\"source\":"+jsonQuoted(item.second.source)+",\"version\":"+jsonQuoted(item.second.version)+"}\n";
-            if(!SpeechService::write(config_+L".models",cache))step="save_failed";}
+            if(!storeObservations())step="save_failed";}
         finish(step);
     }
     /// Reject junctions and symlinks at every explicitly traversed boundary.
@@ -289,6 +320,7 @@ private:
     static bool valid(const AiProfile& p) {
         if(p.id.empty() || p.id.size()>80 || p.name.empty() || p.name.size()>256 || p.path.size()>32760 || p.body.size()>32768 || p.references.size()>8192 || p.model.size()>256 || p.models.size()>32768) return false;
         if(p.kind=="cli") return (aiCliTool(p.type) || p.type=="stdin") && p.timeout>=10 && p.timeout<=3600 && (p.effort.empty() || p.effort=="minimal" || p.effort=="low" || p.effort=="medium" || p.effort=="high" || p.effort=="xhigh" || p.effort=="max");
+        if(p.kind=="api") { string endpoint, error; return aiApiEndpoint(p.type, p.path, endpoint, error) && aiApiModelId(p.model) && p.timeout>=10 && p.timeout<=3600; }
         return p.kind=="project" || p.kind=="prompt";
     }
     /// Save the complete small profile collection as independent JSON lines.
@@ -309,6 +341,7 @@ private:
     }
     /// Capture prompt/output under a unique call-owned history directory and run bounded stdio.
     void execute(const AiRequest& r,bool preview) {
+        if(r.operation=="api-models"){apiModels(r);return;}
         if(!r.operation.empty()){management(r);return;}
         string input,error;
         if(!assemble(r,input,error)) {finish(error);return;}
@@ -320,29 +353,23 @@ private:
         const auto in=(dir/L"prompt.txt").native(), out=(dir/L"result.md").native(), err=(dir/L"stderr.txt").native();
         if(!SpeechService::write(in,input)) {finish("save_failed");return;}
         if(preview) {finish("preview",in);return;}
+        const wstring metadataPath=(dir/L"analysis.json").native();
+        if(r.cli.kind=="api") {
+            string metadata=historyMetadata(r, input);
+            if(!SpeechService::write(metadataPath,metadata)) {finish("save_failed");return;}
+            {std::lock_guard<std::mutex> lock(mutex_);state_.step="running";++state_.revision;}
+            settle(metadataPath,std::move(metadata),aiApiRun(r,input,out,err),out,err,r);
+            return;
+        }
         wstring exe=executable(r.cli);
         if(exe.empty()) {finish("cli_missing");return;}
         if(!SpeechService::write((dir/L"empty-mcp.json").native(),"{\"mcpServers\":{}}")) {finish("save_failed");return;}
         if(r.cli.type!="stdin" && r.cli.type!="claude" && r.cli.type!="codebuddy") {
             if(!materialize(dir) || !SpeechService::write((dir/L"request.json").native(),managementRequest(r.cli,"run",in))) {finish("save_failed");return;}exe=powershell();
         }
-        string metadata="{\"schema\":\"1\",\"cliName\":"+jsonQuoted(r.cli.name)+",\"cliType\":"+jsonQuoted(r.cli.type)+",\"cli\":"+encode(r.cli)+",\"project\":"+encode(r.project)+",\"prompt\":"+encode(r.prompt)+",\"inputSha256\":"+jsonQuoted(digest(input))+",\"status\":\"running\"}";
-        if(!SpeechService::write((dir/L"analysis.json").native(),metadata)) {finish("save_failed");return;}
-        const string status=process(r,exe,dir.native(),in,out,err);
-        const string text=SpeechService::read(out,2*1024*1024);
-        if(status=="complete") {
-            const string diagnostic=text.empty()?SpeechService::read(err,256*1024):text;
-            const size_t first=diagnostic.find_first_not_of(" \t\r\n");
-            const string lead=first==string::npos?"":diagnostic.substr(first,96);
-            if(diagnostic.find("the reasoning effort value is not supported by the current model")!=string::npos) error="reasoning_unsupported";
-            else if(lead.compare(0,6,"Error:")==0 || lead.compare(0,10,"API Error:")==0 || (lead.size()>3 && lead[0]>='4' && lead[0]<='5' && isdigit(static_cast<unsigned char>(lead[1])) && isdigit(static_cast<unsigned char>(lead[2])) && lead[3]==' ')) error="provider_error";
-        }
-        if(error.empty() && status=="complete" && (text.empty() || (r.test && text.find("PHONERECORD_AI_OK")==string::npos))) {error=r.test?"test_failed":"empty_output";}
-        const string finalStatus=error.empty()?status:error;
-        metadata.replace(metadata.rfind("running"),7,finalStatus);
-        if(!SpeechService::write((dir/L"analysis.json").native(),metadata)) {finish("save_failed");return;}
-        if(finalStatus=="complete" && !r.test && !SpeechService::write(r.wav+L".ai-latest.json","{\"result\":"+jsonQuoted(wideToUtf8(out))+"}")) {finish("save_failed");return;}
-        finish(finalStatus,finalStatus=="complete"?out:L"");
+        string metadata=historyMetadata(r, input);
+        if(!SpeechService::write(metadataPath,metadata)) {finish("save_failed");return;}
+        settle(metadataPath,std::move(metadata),process(r,exe,dir.native(),in,out,err),out,err,r);
     }
     /// Launch suspended with an explicit inherited-handle allowlist; kill children on every exit.
     string process(const AiRequest& r,const wstring& exe,const wstring& dir,const wstring& in,const wstring& out,const wstring& err) {
@@ -394,6 +421,102 @@ private:
         for(HANDLE handle:handles) if(handle!=INVALID_HANDLE_VALUE) CloseHandle(handle);
         return status;
     }
+    /// Analysis snapshot. encode() omits the API key, so this file cannot persist it.
+    static string historyMetadata(const AiRequest& r, const string& input) {
+        return "{\"schema\":\"1\",\"cliName\":"+jsonQuoted(r.cli.name)+",\"cliType\":"+jsonQuoted(r.cli.type)+",\"cli\":"+encode(r.cli)+",\"project\":"+encode(r.project)+",\"prompt\":"+encode(r.prompt)+",\"inputSha256\":"+jsonQuoted(digest(input))+",\"status\":\"running\"}";
+    }
+    /// Apply provider-error heuristics and publish the terminal analysis state.
+    void settle(const wstring& metadataPath, string metadata, const string& status, const wstring& out, const wstring& err, const AiRequest& r) {
+        string error;
+        const string text=SpeechService::read(out,2*1024*1024);
+        if(status=="complete") {
+            const string diagnostic=text.empty()?SpeechService::read(err,256*1024):text;
+            const size_t first=diagnostic.find_first_not_of(" \t\r\n");
+            const string lead=first==string::npos?"":diagnostic.substr(first,96);
+            if(diagnostic.find("the reasoning effort value is not supported by the current model")!=string::npos) error="reasoning_unsupported";
+            else if(lead.compare(0,6,"Error:")==0 || lead.compare(0,10,"API Error:")==0 || (lead.size()>3 && lead[0]>='4' && lead[0]<='5' && isdigit(static_cast<unsigned char>(lead[1])) && isdigit(static_cast<unsigned char>(lead[2])) && lead[3]==' ')) error="provider_error";
+        }
+        if(error.empty() && status=="complete" && (text.empty() || (r.test && text.find("PHONERECORD_AI_OK")==string::npos))) {error=r.test?"test_failed":"empty_output";}
+        const string finalStatus=error.empty()?status:error;
+        metadata.replace(metadata.rfind("running"),7,finalStatus);
+        if(!SpeechService::write(metadataPath,metadata)) {finish("save_failed");return;}
+        if(finalStatus=="complete" && !r.test && !SpeechService::write(r.wav+L".ai-latest.json","{\"result\":"+jsonQuoted(wideToUtf8(out))+"}")) {finish("save_failed");return;}
+        finish(finalStatus,finalStatus=="complete"?out:L"");
+    }
+    /// POST the assembled prompt and store only the assistant text plus a redacted diagnostic.
+    string aiApiRun(const AiRequest& r, const string& prompt, const wstring& out, const wstring& err) {
+        string endpoint, ignored;
+        if(!aiApiEndpoint(r.cli.type, r.cli.path, endpoint, ignored)) return "api_failed";
+        AiHttpSlot slot{&httpMutex_, &http_, &cancel_};
+        AiHttpResult result=aiHttpExchange(endpoint, L"POST", r.cli.type, r.cli.secret, aiApiRequestBody(r.cli.type, r.cli.model, prompt), r.cli.timeout, slot);
+        if(!result.code.empty()) {std::lock_guard<std::mutex> lock(mutex_); state_.code=result.code;}
+        if(result.step!="complete") {SpeechService::write(err, result.detail); return result.step;}
+        string text;
+        if(!aiApiExtract(r.cli.type, result.body, text) || text.empty()) {
+            string message;
+            if(aiApiErrorMessage(result.body, message) && !message.empty()) {SpeechService::write(err, aiApiRedact(message, r.cli.secret).substr(0,500)); return "provider_error";}
+            SpeechService::write(out, "");
+            return "complete";
+        }
+        text=aiApiRedact(text, r.cli.secret);
+        return SpeechService::write(out, text) ? "complete" : "save_failed";
+    }
+    /// GET the provider model list and cache it under the profile id, separate from CLI tools.
+    void apiModels(const AiRequest& r) {
+        string endpoint, ignored;
+        if(!aiApiEndpoint(r.cli.type, r.cli.path, endpoint, ignored)) {finish("api_models_failed"); return;}
+        const string modelsUrl=aiApiModelsUrl(endpoint);
+        if(modelsUrl.empty()) {finish("api_models_failed"); return;}
+        {std::lock_guard<std::mutex> lock(mutex_); state_.step="api_models_loading"; ++state_.revision;}
+        AiHttpSlot slot{&httpMutex_, &http_, &cancel_};
+        AiHttpResult result=aiHttpExchange(modelsUrl, L"GET", r.cli.type, r.cli.secret, "", r.cli.timeout?r.cli.timeout:30, slot);
+        if(result.step=="cancelled" || result.step=="timeout") {finish(result.step); return;}
+        const std::vector<string> ids=result.step=="complete"?aiApiModelIds(result.body):std::vector<string>{};
+        if(ids.empty()) {finish("api_models_failed"); return;}
+        string joined;
+        for(const string& id:ids) { if(!joined.empty()) joined+='\n'; joined+=id; }
+        bool stored=true;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto& saved=observations_[r.cli.id];
+            saved.models=joined; saved.source="api"; saved.cached=false; saved.step="models_ready"; ++saved.revision;
+            if(r.cli.id!="draft") stored=storeObservations();
+        }
+        finish(stored?"models_ready":"save_failed");
+    }
+    /// Persist CLI and API model observations. Draft lists stay in memory for the current form only.
+    bool storeObservations() {
+        string cache;
+        for(const auto& item:observations_) {
+            if(item.first=="draft") continue;
+            const string type=aiCliTool(item.first)?item.first:"api:"+item.first;
+            cache+="{\"type\":"+jsonQuoted(type)+",\"path\":"+jsonQuoted(item.second.path)+",\"models\":"+jsonQuoted(item.second.models)+",\"source\":"+jsonQuoted(item.second.source)+",\"version\":"+jsonQuoted(item.second.version)+"}\n";
+        }
+        return SpeechService::write(config_+L".models", cache);
+    }
+    /// Load DPAPI keys for the current Windows account. Plaintext lines are ignored.
+    void loadSecrets() {
+        secrets_.clear();
+        std::istringstream rows(SpeechService::read(config_+L".secrets", 1024*1024));
+        string row;
+        while(std::getline(rows, row)) {
+            const string id=jsonField(row, "id"), encoded=jsonField(row, "key");
+            if(id.empty() || encoded.compare(0, 6, "dpapi:")!=0) continue;
+            string plain;
+            if(!unprotectLocalSecret(encoded, plain) || !aiApiKeyOk(plain)) continue;
+            secrets_[id]=plain;
+        }
+    }
+    /// Rewrite the key file. Every value is a fresh DPAPI blob; the raw key is not written.
+    bool persistSecrets() {
+        string bytes;
+        for(const auto& item:secrets_) {
+            string encoded;
+            if(!protectLocalSecret(item.second, encoded)) return false;
+            bytes+="{\"id\":"+jsonQuoted(item.first)+",\"key\":"+jsonQuoted(encoded)+"}\n";
+        }
+        return SpeechService::write(config_+L".secrets", bytes);
+    }
     /// GUI-owned preferences and private worker lifetime.
     wstring config_;
     bool enabled_=false;
@@ -406,6 +529,12 @@ private:
     std::map<string,AiCliObservation> observations_;
     HANDLE login_=NULL;
     AiProfile loginProfile_;
+    /// Published only while an API request is outstanding. Cancellation closes it.
+    HINTERNET http_=NULL;
+    /// Serializes the request handle with cancel(); not held during the transfer.
+    std::mutex httpMutex_;
+    /// Decrypted API keys for this process. GUI thread only; absent from encode().
+    std::map<string,string> secrets_;
 };
 
 /// One coordinator per selected application configuration.
